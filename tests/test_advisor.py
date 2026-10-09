@@ -99,7 +99,7 @@ def test_turn_receipt_and_threshold(store, cfg):
         store.add_event(AgentEvent("claude", "s1", EventType.SUBAGENT_STARTED, {"desc_sig": f"x{i}"}))
     store.add_usage(UsageSnapshot("claude", "five_hour", ResourceType.USAGE_PERCENT, 47, reset, 300, Source.PROVIDER_CLI, Confidence.HIGH, time.time() + 1))
     out = hook.handle({"hook_event_name": "Stop", "session_id": "s1"}, cfg, store)
-    assert out and "that turn used ~7% of your 5-hour window (2 subagents" in out["systemMessage"]
+    assert out and "that turn used 7% of your 5-hour window (2 subagents" in out["systemMessage"]  # exact
 
     cfg["advisor"]["receipt_min_percent"] = 10
     assert hook.handle({"hook_event_name": "Stop", "session_id": "s1"}, cfg, store) is None

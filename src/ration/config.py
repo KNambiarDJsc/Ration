@@ -13,6 +13,10 @@ from typing import Any
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "budget": {
+        # For API-key users (no subscription windows): dollar budgets built from
+        # Claude Code's own session cost estimate. 0 = off.
+        "daily_usd": 0,
+        "weekly_usd": 0,
         "reserve_percent": 20,
         # burn_pressure above this -> CONSERVATIVE
         "conservative_pressure": 1.25,
@@ -39,8 +43,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "model_suggestions": True,
         "budget_alerts": True,
         "turn_receipts": True,
-        # Only show a per-turn receipt when a turn used at least this % of the 5h window.
-        "receipt_min_percent": 2.0,
+        # Only show a per-turn receipt when a turn used at least this much.
+        "receipt_min_percent": 2.0,  # of the 5-hour window (subscriptions)
+        "receipt_min_usd": 0.25,  # API-key users
+        "receipt_min_mtokens": 1.0,  # weighted million tokens, when no % or $ is known
         # Don't repeat the same kind of tip in a session within this many minutes.
         "quiet_minutes": 20,
     },

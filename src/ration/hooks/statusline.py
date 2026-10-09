@@ -105,14 +105,29 @@ def run_chained(command: str, raw: bytes) -> str | None:
 
 
 def record_model(payload: dict[str, Any], store: Store) -> None:
-    """Remember the session's current model so the advisor can compare against it."""
+    """Remember the session's current model + effort so the advisor can compare against them."""
     sid = payload.get("session_id")
     model = (payload.get("model") or {}).get("id") if isinstance(payload.get("model"), dict) else payload.get("model")
     if not sid or not model:
         return
+    effort = (payload.get("effort") or {}).get("level") if isinstance(payload.get("effort"), dict) else None
     last = store.last_event(str(sid), EventType.MODEL_SELECTED)
-    if last is None or last.metadata.get("model") != model:
-        store.add_event(AgentEvent("claude", str(sid), EventType.MODEL_SELECTED, {"model": model, "source": "statusline"}))
+    if last is None or last.metadata.get("model") != model or (effort and last.metadata.get("effort") != effort):
+        meta = {"model": model, "source": "statusline"}
+        if effort:
+            meta["effort"] = effort
+        store.add_event(AgentEvent("claude", str(sid), EventType.MODEL_SELECTED, meta))
+
+
+def record_cost(payload: dict[str, Any], store: Store) -> None:
+    """Claude Code's own session cost estimate (works for API-key users too)."""
+    sid = payload.get("session_id")
+    usd = (payload.get("cost") or {}).get("total_cost_usd") if isinstance(payload.get("cost"), dict) else None
+    if not sid or usd is None:
+        return
+    last = store.last_event(str(sid), EventType.COST)
+    if last is None or abs(float(last.metadata.get("usd", 0)) - float(usd)) >= 0.001:
+        store.add_event(AgentEvent("claude", str(sid), EventType.COST, {"usd": round(float(usd), 4)}))
 
 
 def alert_segment(store: Store, cfg: dict[str, Any]) -> str | None:
@@ -135,6 +150,7 @@ def main() -> int:
         with Store() as store:
             record(payload, store)
             record_model(payload, store)
+            record_cost(payload, store)
             segment = alert_segment(store, cfg)
     except Exception:
         pass

@@ -3,27 +3,42 @@
 Shown to the developer through the hook `systemMessage` field (never added to
 the model's context), and advisory only:
 
-- on prompt submit: model/effort suggestion, limit warnings, stuck-session tip
-- on stop: a per-turn usage receipt ("that turn used ~6% of your 5-hour window")
+- on prompt submit: model + effort suggestion, limit warnings, stuck-session tip
+- on stop: a per-turn receipt ("that turn used 7% of your 5-hour window")
 - in the status line: a short limit warning segment
 
+Data sources, all local (no APIs, no LLM calls):
+- Claude Code status line JSON: rate_limits %, session cost estimate, model, effort
+- session transcripts (`transcript_path`): exact per-turn tokens, model, effort
+- RATION's own history: how turns of each kind actually went in this repo
+
 Prompt text is classified in memory and never stored. Each kind of tip is
-rate-limited so the advisor stays quiet unless something matters.
+rate-limited, and model tips are withheld when the classifier isn't confident.
 """
 
 from __future__ import annotations
 
+import statistics
 import time
+from dataclasses import replace
 from typing import Any
 
+from . import transcript
 from .budget import ProviderBudget, provider_budgets
 from .difficulty import Assessment, assess
 from .models import AgentEvent, BudgetMode, Effort, EventType, ModelClass, TaskType
+from .normalize import sig
 from .stuck import detect
 
 PROVIDER = "claude"
-WINDOW_LABEL = {"five_hour": "5-hour", "seven_day": "weekly", "spend_limit": "spend-limit"}
-SHORT_LABEL = {"five_hour": "5h", "seven_day": "7d", "spend_limit": "spend"}
+WINDOW_LABEL = {
+    "five_hour": "5-hour",
+    "seven_day": "weekly",
+    "spend_limit": "spend-limit",
+    "daily_usd": "daily spend",
+    "weekly_usd": "weekly spend",
+}
+SHORT_LABEL = {"five_hour": "5h", "seven_day": "7d", "spend_limit": "spend", "daily_usd": "$/day", "weekly_usd": "$/wk"}
 TYPE_LABEL = {
     TaskType.TRIVIAL_EDIT: "small edit",
     TaskType.CODE_GENERATION: "feature change",
@@ -36,10 +51,15 @@ TYPE_LABEL = {
     TaskType.CODE_REVIEW: "review",
     TaskType.PERFORMANCE: "performance work",
 }
+EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"]
 USE_IT_QUIET_S = 6 * 3600
+HISTORY_DAYS = 60
+MIN_HISTORY = 4
+MIN_CALIBRATION = 3
 Tip = tuple[str, str]  # (kind, message)
 
 
+# ---- formatting ----------------------------------------------------------
 def fmt_h(hours: float | None) -> str:
     if hours is None:
         return "?"
@@ -51,6 +71,15 @@ def fmt_h(hours: float | None) -> str:
     return f"{m // 1440}d{m % 1440 // 60:02d}h"
 
 
+def fmt_tok(n: float) -> str:
+    if n >= 1e6:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1e3:
+        return f"{n / 1e3:.0f}k"
+    return f"{n:.0f}"
+
+
+# ---- current model / effort ------------------------------------------------
 def _markers(s: str) -> list[str]:
     return [k.strip().lower() for k in s.split(",") if k.strip()]
 
@@ -67,6 +96,18 @@ def model_class_of(model: str | None, cfg: dict[str, Any]) -> ModelClass | None:
     return ModelClass.STRONG
 
 
+def current_model(store: Any, session_id: str, transcript_path: str | None) -> tuple[str | None, str | None]:
+    """Newest of: status line / model-switch events, and the transcript's last reply."""
+    ev = store.last_event(session_id, EventType.MODEL_SELECTED)
+    tl = transcript.tail(transcript_path) if transcript_path else transcript.Slice()
+    ev_model = ev.metadata.get("model") if ev else None
+    ev_effort = ev.metadata.get("effort") if ev else None
+    if ev_model and (tl.last_ts is None or ev.timestamp >= tl.last_ts):
+        return ev_model, ev_effort or tl.last_effort
+    return tl.last_model or ev_model, tl.last_effort or ev_effort
+
+
+# ---- classification ---------------------------------------------------------
 def recommend(a: Assessment) -> tuple[ModelClass, Effort]:
     """Interactive recommendation. Unlike `ration run`, a failed cheap attempt here
     costs the developer's time, so routine work maps to the strong tier."""
@@ -82,14 +123,72 @@ def is_task_like(prompt: str) -> bool:
     return bool(p) and p[0] not in "/!#" and len(p.split()) >= 6
 
 
+def history_stats(store: Any, repo: str, task_type: TaskType, now: float) -> tuple[int, float, float] | None:
+    rows = [
+        e.metadata
+        for e in store.events_of_type(EventType.TURN_SUMMARY, since=now - HISTORY_DAYS * 86400, limit=3000)
+        if e.metadata.get("repo") == repo and e.metadata.get("task_type") == str(task_type)
+    ]
+    if len(rows) < MIN_HISTORY:
+        return None
+    return (
+        len(rows),
+        statistics.median(float(r.get("tools") or 0) for r in rows),
+        statistics.median(float(r.get("wtok") or 0) for r in rows),
+    )
+
+
+def contextualize(a: Assessment, store: Any, session_id: str, repo: str, now: float) -> Assessment:
+    """Correct the keyword guess with what this session and this repo actually show."""
+    reasons, d, ttype, conf = list(a.reasons), a.difficulty, a.task_type, a.confidence
+    recent = store.events(session_id=session_id, since=now - 1800, limit=300)
+    fails = [e for e in recent if e.event_type == EventType.TEST_RESULT and not e.metadata.get("ok")]
+    if fails and ttype in (TaskType.CODE_GENERATION, TaskType.REFACTOR, TaskType.TESTS) and conf != "high":
+        ttype, d, conf = TaskType.DEBUGGING, max(d, 0.55) + 0.05, "medium"
+        reasons.append(f"+ session has {len(fails)} failing test run(s)")
+    stats = history_stats(store, repo, ttype, now)
+    if stats:
+        n, med_tools, med_wtok = stats
+        label = TYPE_LABEL.get(ttype, str(ttype))
+        if med_tools >= 40 or med_wtok >= 8e6:
+            d = max(d + 0.15, 0.45)  # never call these "simple" again
+            reasons.append(f"+ {label} turns in this repo usually take ~{med_tools:.0f} tool calls ({n} seen)")
+        elif med_tools <= 6 and med_wtok <= 5e5:
+            d -= 0.1
+            reasons.append(f"- {label} turns in this repo are usually quick (~{med_tools:.0f} tool calls, {n} seen)")
+    return replace(a, task_type=ttype, difficulty=round(max(0.0, min(1.0, d)), 3), reasons=reasons, confidence=conf)
+
+
 def _hardness(a: Assessment) -> list[str]:
     return [r[2:] for r in a.reasons if r.startswith("+ ") and "short/ambiguous" not in r][:2]
 
 
-def model_tip(a: Assessment, current_model: str | None, cfg: dict[str, Any], budget: ProviderBudget | None) -> Tip | None:
-    cur = model_class_of(current_model, cfg)
-    if cur is None:
+# ---- tips -------------------------------------------------------------------
+def _effort_rank(e: str | None) -> int | None:
+    return EFFORT_ORDER.index(e) if e in EFFORT_ORDER else None
+
+
+def effort_change(rec: Effort, cur: str | None, confident_down: bool) -> str | None:
+    r, c = _effort_rank(str(rec)), _effort_rank(cur)
+    if r is None or c is None:
         return None
+    if r > c and rec == Effort.HIGH:
+        return "high"
+    if c > r and confident_down and c >= EFFORT_ORDER.index("high"):
+        return str(rec)
+    return None
+
+
+def model_tip(
+    a: Assessment,
+    current: str | None,
+    cfg: dict[str, Any],
+    budget: ProviderBudget | None,
+    current_effort: str | None = None,
+) -> Tip | None:
+    if a.confidence == "low":
+        return None  # don't advise on a guess
+    cur = model_class_of(current, cfg)
     rec, effort = recommend(a)
     c = cfg["claude"]
     name = {ModelClass.CHEAP: c["cheap"], ModelClass.STRONG: c["strong"], ModelClass.PREMIUM: c["premium"]}
@@ -97,33 +196,40 @@ def model_tip(a: Assessment, current_model: str | None, cfg: dict[str, Any], bud
     mode = budget.mode if known else BudgetMode.NORMAL
     label = TYPE_LABEL.get(a.task_type, str(a.task_type))
     bw = budget.binding if known else None
+    confident_simple = a.confidence == "high" and a.difficulty < 0.45
+    eff = effort_change(effort, current_effort, confident_simple)
+    eff_cmd = f" and `/effort {eff}`" if eff else ""
 
-    if cur == ModelClass.PREMIUM and rec != ModelClass.PREMIUM and a.difficulty < 0.45:
+    if cur == ModelClass.PREMIUM and rec != ModelClass.PREMIUM and confident_simple:
         if mode == BudgetMode.AGGRESSIVE:
             return None  # quota would go unused anyway; don't nag
         extra = f" Your {WINDOW_LABEL.get(bw.window, bw.window)} window is {bw.used_percent:.0f}% used." if mode == BudgetMode.CONSERVATIVE and bw else ""
         return (
             "model:down",
-            f"this looks like a {label}: {name[rec]} should be enough (you're on {current_model}). "
-            f"`/model {name[rec]}` saves premium quota.{extra}",
+            f"this looks like a {label}: {name[rec]} should be enough (you're on {current}). "
+            f"`/model {name[rec]}`{eff_cmd} {'save' if eff_cmd else 'saves'} premium quota.{extra}",
         )
-    if rec == ModelClass.PREMIUM and cur != ModelClass.PREMIUM:
+    if rec == ModelClass.PREMIUM and cur is not None and cur != ModelClass.PREMIUM:
         why = ", ".join(_hardness(a)) or label
         rem = budget.remaining_percent if known else None
         if known and bw and (mode == BudgetMode.CONSERVATIVE or (rem is not None and rem <= cfg["budget"]["reserve_percent"])):
             return (
                 "model:up-held",
                 f"this looks hard ({why}). It would normally deserve {name[ModelClass.PREMIUM]}, but your "
-                f"{WINDOW_LABEL.get(bw.window, bw.window)} window is {bw.used_percent:.0f}% used: stay on {current_model}, "
+                f"{WINDOW_LABEL.get(bw.window, bw.window)} window is {bw.used_percent:.0f}% used: stay on {current}, "
                 "give it the failing test or stack trace up front, and keep the scope tight.",
             )
         return (
             "model:up",
-            f"this looks like hard {label} ({why}): consider `/model {name[ModelClass.PREMIUM]}` with {effort} effort. "
-            "A stronger first attempt is usually cheaper than several weak ones.",
+            f"this looks like hard {label} ({why}): consider `/model {name[ModelClass.PREMIUM]}`"
+            f"{eff_cmd or ' with high effort'}. A stronger first attempt is usually cheaper than several weak ones.",
         )
     if cur == ModelClass.CHEAP and rec == ModelClass.STRONG and a.difficulty >= 0.45:
-        return "model:up", f"this looks bigger than a quick edit: `/model {name[ModelClass.STRONG]}` will likely save retries."
+        return "model:up", f"this looks bigger than a quick edit: `/model {name[ModelClass.STRONG]}`{eff_cmd} will likely save retries."
+    if eff:  # right model, wrong effort
+        direction = "up" if eff == "high" else "down"
+        why = f"hard {label}" if direction == "up" else f"a {label}"
+        return f"effort:{direction}", f"this looks like {why}: `/effort {eff}` (you're on {current_effort})."
     return None
 
 
@@ -136,26 +242,27 @@ def budget_alert(budgets: dict[str, ProviderBudget], *, short: bool = False) -> 
         if not w.hours_to_reset:
             continue
         label, sl = WINDOW_LABEL.get(w.window, w.window), SHORT_LABEL.get(w.window, w.window)
+        noun = "budget" if w.window.endswith("_usd") else "limit"
         if w.remaining_percent <= 5:
             cand = (
                 0,
                 w.hours_to_reset,
                 f"limit:{w.window}",
-                f"your {label} limit is {w.used_percent:.0f}% used; it resets in {fmt_h(w.hours_to_reset)}.",
+                f"your {label} {noun} is {w.used_percent:.0f}% used; it resets in {fmt_h(w.hours_to_reset)}.",
                 f"⚠ {sl} {w.used_percent:.0f}% · resets {fmt_h(w.hours_to_reset)}",
             )
         else:
             eta = w.hours_to_exhaust
-            horizon = 2.0 if w.window == "five_hour" else 48.0
+            horizon = 2.0 if w.window == "five_hour" else 12.0 if w.window == "daily_usd" else 48.0
             if not (w.reliable and eta is not None and eta < w.hours_to_reset and eta <= horizon):
                 continue
             cand = (
                 1,
                 eta,
                 f"pace:{w.window}",
-                f"at this pace you'll hit your {label} limit in ~{fmt_h(eta)} (it resets in {fmt_h(w.hours_to_reset)}). "
+                f"at this pace you'll hit your {label} {noun} in ~{fmt_h(eta)} (it resets in {fmt_h(w.hours_to_reset)}). "
                 "Use a lighter model or fewer subagents for routine steps.",
-                f"⚠ {sl} limit in ~{fmt_h(eta)}",
+                f"⚠ {sl} {noun} in ~{fmt_h(eta)}",
             )
         if best is None or cand[:2] < best[:2]:
             best = cand
@@ -191,26 +298,90 @@ def stuck_tip(events: list[AgentEvent]) -> Tip | None:
     )
 
 
-def usage_mark(store: Any, now: float) -> dict[str, list[float | None]]:
-    return {
-        s.window: [s.used_percent, s.reset_at]
+# ---- metering + calibration --------------------------------------------------
+def usage_mark(store: Any, session_id: str, now: float) -> dict[str, list[float | None]]:
+    """Readings at prompt time: {meter: [value, reset_at, captured_at]}."""
+    mark: dict[str, list[float | None]] = {
+        s.window: [s.used_percent, s.reset_at, s.captured_at]
         for s in store.latest_usage(PROVIDER)
         if s.reset_at is None or s.reset_at > now
     }
+    cost = store.last_event(session_id, EventType.COST)
+    if cost is not None:
+        mark["usd"] = [float(cost.metadata.get("usd") or 0.0), None, cost.timestamp]
+    return mark
 
 
+def _same_window(a: float | None, b: float | None) -> bool:
+    return a is None or b is None or abs(a - b) < 120
+
+
+def reconcile(store: Any, session_id: str, mark: dict[str, Any], now: float) -> list[AgentEvent]:
+    """At the next prompt, the previous turn's exact usage is known (mark-to-mark).
+    Pair it with that turn's exact token count to learn usage-per-token locally."""
+    prev = store.last_event(session_id, EventType.PROMPT_SUBMITTED)
+    summ = store.last_event(session_id, EventType.TURN_SUMMARY)
+    if prev is None or summ is None or summ.timestamp < prev.timestamp:
+        return []
+    by_model = summ.metadata.get("by_model") or {}
+    total = float(sum(by_model.values()))
+    if total <= 0:
+        return []
+    dom, dom_w = max(by_model.items(), key=lambda kv: kv[1])
+    if dom_w / total < 0.8:
+        return []  # mixed models: can't attribute usage to one model's rate
+    old = prev.metadata.get("usage_mark") or {}
+    out = []
+    for meter, minimum in (("five_hour", 1.0), ("usd", 0.01)):
+        a, b = old.get(meter), mark.get(meter)
+        if not a or not b:
+            continue
+        if meter != "usd" and (not _same_window(a[1], b[1]) or store.other_session_activity(session_id, prev.timestamp, now)):
+            continue  # shared window touched by another session: not attributable
+        delta = float(b[0]) - float(a[0])
+        if delta < minimum:
+            continue
+        out.append(
+            AgentEvent(
+                PROVIDER,
+                session_id,
+                EventType.CALIBRATION,
+                {"meter": meter, "model": dom, "rate": delta / (total / 1e6), "delta": round(delta, 4), "wtok": round(total)},
+                timestamp=now,
+            )
+        )
+    return out
+
+
+def calibrated_rate(store: Any, meter: str, model: str, now: float) -> tuple[float, int] | None:
+    rates = [
+        float(e.metadata["rate"])
+        for e in store.events_of_type(EventType.CALIBRATION, since=now - 30 * 86400, limit=2000)
+        if e.metadata.get("meter") == meter and e.metadata.get("model") == model and e.metadata.get("rate")
+    ][-25:]
+    if len(rates) < MIN_CALIBRATION:
+        return None
+    return statistics.median(rates), len(rates)
+
+
+# ---- hook entry points ---------------------------------------------------------
 def on_prompt(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: float | None = None) -> tuple[list[AgentEvent], dict[str, Any], str | None]:
-    """Returns (advice events, extra PROMPT_SUBMITTED metadata, message for the developer)."""
+    """Returns (events, extra PROMPT_SUBMITTED metadata, message for the developer)."""
     now = time.time() if now is None else now
     adv = cfg["advisor"]
     sid = str(payload.get("session_id") or "unknown")
+    tpath = payload.get("transcript_path")
+    repo = sig(payload.get("cwd") or "")
     prompt = payload.get("prompt") or ""
-    meta: dict[str, Any] = {"usage_mark": usage_mark(store, now)}
+    mark = usage_mark(store, sid, now)
+    events = reconcile(store, sid, mark, now)
+    meta: dict[str, Any] = {"usage_mark": mark, "repo": repo, "transcript_offset": transcript.size(tpath)}
     a = assess(prompt) if is_task_like(prompt) else None
     if a:
-        meta.update(task_type=str(a.task_type), difficulty=a.difficulty)
+        a = contextualize(a, store, sid, repo, now)
+        meta.update(task_type=str(a.task_type), difficulty=a.difficulty, confidence=a.confidence)
     if not adv["enabled"]:
-        return [], meta, None
+        return events, meta, None
 
     budgets = provider_budgets(store, cfg, now=now)
     tips: list[Tip] = []
@@ -222,15 +393,14 @@ def on_prompt(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: flo
     if t:
         tips.append(t)
     if adv["model_suggestions"] and a:
-        cur = store.last_event(sid, EventType.MODEL_SELECTED)
-        t = model_tip(a, cur.metadata.get("model") if cur else None, cfg, budgets.get(PROVIDER))
+        model, effort = current_model(store, sid, tpath)
+        t = model_tip(a, model, cfg, budgets.get(PROVIDER), effort)
         if t:
             tips.append(t)
 
     shown: list[str] = []
-    events: list[AgentEvent] = []
     for kind, msg in tips:
-        account_wide = kind.startswith(("use_it", "pace:seven_day", "limit:seven_day"))
+        account_wide = kind.startswith(("use_it", "pace:seven_day", "limit:seven_day", "pace:weekly_usd"))
         quiet = USE_IT_QUIET_S if kind.startswith("use_it") else adv["quiet_minutes"] * 60
         if store.recent_advice(kind, now - quiet, None if account_wide else sid):
             continue
@@ -239,38 +409,99 @@ def on_prompt(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: flo
     return events, meta, ("RATION: " + "\nRATION: ".join(shown)) if shown else None
 
 
-def on_stop(payload: dict[str, Any], cfg: dict[str, Any], store: Any) -> tuple[list[AgentEvent], str | None]:
+def _turn_tokens(store: Any, sid: str, prompt: AgentEvent, tpath: str | None) -> tuple[dict[str, float], int, float | None]:
+    """Exact weighted tokens by model for the turn: main transcript slice + subagents."""
+    by_model: dict[str, float] = {}
+    total = 0
+    last_ts = None
+    offset = prompt.metadata.get("transcript_offset")
+    if tpath and offset is not None:
+        sl = transcript.read_slice(tpath, int(offset))
+        for m, t in sl.by_model.items():
+            by_model[m] = by_model.get(m, 0.0) + t.weighted
+        total += sl.total
+        last_ts = sl.last_ts
+    for e in store.events(session_id=sid, since=prompt.timestamp, limit=5000):
+        if e.event_type == EventType.SUBAGENT_ENDED and e.metadata.get("by_model"):
+            for m, w in e.metadata["by_model"].items():
+                by_model[m] = by_model.get(m, 0.0) + float(w)
+            total += int(e.metadata.get("tokens") or 0)
+    return by_model, total, last_ts
+
+
+def on_stop(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: float | None = None) -> tuple[list[AgentEvent], str | None]:
+    now = time.time() if now is None else now
     adv = cfg["advisor"]
-    if not (adv["enabled"] and adv["turn_receipts"]) or payload.get("stop_hook_active"):
+    if payload.get("stop_hook_active"):
         return [], None
     sid = str(payload.get("session_id") or "unknown")
     p = store.last_event(sid, EventType.PROMPT_SUBMITTED)
-    if p is None or not p.metadata.get("usage_mark"):
+    if p is None:
         return [], None
-    latest = {s.window: s for s in store.latest_usage(PROVIDER)}
-    deltas: dict[str, float] = {}
-    for window, (used0, reset0) in p.metadata["usage_mark"].items():
-        s = latest.get(window)
-        same_window = s is not None and (reset0 is None or s.reset_at is None or abs(s.reset_at - reset0) < 120)
-        if s is not None and same_window and s.captured_at > p.timestamp:
-            deltas[window] = s.used_percent - float(used0)
-    main = next((w for w in ("five_hour", "spend_limit", "seven_day") if w in deltas), None)
-    if main is None or deltas[main] < adv["receipt_min_percent"]:
-        return [], None
+    by_model, tokens, last_ts = _turn_tokens(store, sid, p, payload.get("transcript_path"))
+    wtok = sum(by_model.values())
     turn = store.events(session_id=sid, since=p.timestamp, limit=5000)
     subs = sum(1 for e in turn if e.event_type == EventType.SUBAGENT_STARTED)
     tools = sum(1 for e in turn if e.event_type in (EventType.TOOL_COMPLETED, EventType.TOOL_FAILED))
-    s = latest[main]
+    summary = {
+        "task_type": p.metadata.get("task_type"),
+        "difficulty": p.metadata.get("difficulty"),
+        "repo": p.metadata.get("repo"),
+        "tools": tools,
+        "subagents": subs,
+        "tokens": tokens,
+        "wtok": round(wtok),
+        "by_model": {m: round(w, 1) for m, w in by_model.items()},
+    }
+    events = [AgentEvent(PROVIDER, sid, EventType.TURN_SUMMARY, summary, timestamp=now)]
+    if not (adv["enabled"] and adv["turn_receipts"]):
+        return events, None
+
     detail = [f"{subs} subagent{'s' if subs != 1 else ''}"] if subs else []
     if tools:
         detail.append(f"{tools} tool calls")
-    hours = None if s.reset_at is None else max(0.0, (s.reset_at - time.time()) / 3600)
-    msg = (
-        f"RATION: that turn used ~{deltas[main]:.0f}% of your {WINDOW_LABEL.get(main, main)} window"
-        + (f" ({', '.join(detail)})" if detail else "")
-        + f". Now {s.used_percent:.0f}% used, resets in {fmt_h(hours)}."
-    )
-    if main != "seven_day" and deltas.get("seven_day", 0) >= 1:
-        msg += f" Weekly +{deltas['seven_day']:.0f}%."
-    ev = AgentEvent(PROVIDER, sid, EventType.ADVICE, {"kind": "receipt", "delta": round(deltas[main], 2), "subagents": subs})
-    return [ev], msg
+    dstr = f" ({', '.join(detail)})" if detail else ""
+    dominant = max(by_model.items(), key=lambda kv: kv[1])[0] if by_model else None
+    mark = p.metadata.get("usage_mark") or {}
+    latest = {s.window: s for s in store.latest_usage(PROVIDER)}
+    cost = store.last_event(sid, EventType.COST)
+    fresh_after = (last_ts or p.timestamp) - 1
+
+    # Subscription users get % of their window (their cost figure is only a list-price
+    # estimate, not what they pay); API-key users get dollars.
+    meters = [m for m in ("five_hour", "spend_limit") if m in mark] or (["usd"] if "usd" in mark else [])
+    msg: str | None = None
+    for meter in meters:
+        if meter == "usd":
+            cur_val, cur_ts, reset_ok = (float(cost.metadata.get("usd") or 0), cost.timestamp, True) if cost else (None, None, False)
+        else:
+            s = latest.get(meter)
+            cur_val, cur_ts = (s.used_percent, s.captured_at) if s else (None, None)
+            reset_ok = s is not None and _same_window(mark[meter][1], s.reset_at)
+        exact = cur_val is not None and reset_ok and cur_ts is not None and cur_ts >= fresh_after
+        if exact:
+            delta, approx = float(cur_val) - float(mark[meter][0]), ""
+        else:
+            rate = calibrated_rate(store, "usd" if meter == "usd" else "five_hour", dominant, now) if dominant and meter != "spend_limit" else None
+            if rate is None or wtok <= 0:
+                continue
+            delta, approx = rate[0] * wtok / 1e6, "~"
+        threshold = adv["receipt_min_usd"] if meter == "usd" else adv["receipt_min_percent"]
+        if delta < threshold:
+            break  # measured, and too small to mention
+        how = f"; estimated from {fmt_tok(tokens)} tokens, calibrated on this machine" if approx else ""
+        if meter == "usd":
+            total_usd = float(cost.metadata.get("usd") or 0) if cost else 0.0
+            msg = f"RATION: that turn cost {approx}${delta:.2f}{dstr}{how}. Session total ${total_usd:.2f}."
+        else:
+            s = latest.get(meter)
+            now_pct = f" Now {s.used_percent:.0f}% used, resets in {fmt_h(None if s.reset_at is None else max(0.0, (s.reset_at - now) / 3600))}." if s and not approx else ""
+            msg = f"RATION: that turn used {approx}{delta:.0f}% of your {WINDOW_LABEL.get(meter, meter)} window{dstr}{how}.{now_pct}"
+        break
+    else:
+        # No % or $ meter at all (e.g. no status line installed): exact tokens still work.
+        if wtok >= adv["receipt_min_mtokens"] * 1e6 and dominant:
+            msg = f"RATION: that turn used {fmt_tok(tokens)} tokens on {dominant}{dstr}."
+    if msg:
+        events.append(AgentEvent(PROVIDER, sid, EventType.ADVICE, {"kind": "receipt", "wtok": round(wtok), "subagents": subs}, timestamp=now))
+    return events, msg

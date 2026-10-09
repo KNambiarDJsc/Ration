@@ -286,6 +286,26 @@ class Store:
             timestamp=r["timestamp"],
         )
 
+    def events_of_type(self, event_type: EventType, since: float = 0.0, limit: int = 500) -> list[AgentEvent]:
+        rows = self.conn.execute(
+            "SELECT * FROM agent_events WHERE event_type=? AND timestamp>=? ORDER BY id DESC LIMIT ?",
+            (str(event_type), since, limit),
+        ).fetchall()
+        return [
+            AgentEvent(r["provider"], r["session_id"], EventType(r["event_type"]), json.loads(r["metadata"]), r["run_id"], r["task_id"], r["timestamp"])
+            for r in reversed(rows)
+        ]
+
+    def other_session_activity(self, session_id: str, start: float, end: float) -> bool:
+        """Did any other session do anything in [start, end]? (Shared quota windows
+        can't be attributed to one session if so.)"""
+        r = self.conn.execute(
+            "SELECT 1 FROM agent_events WHERE session_id!=? AND timestamp BETWEEN ? AND ?"
+            " AND event_type NOT IN ('CALIBRATION','ADVICE') LIMIT 1",
+            (session_id, start, end),
+        ).fetchone()
+        return r is not None
+
     def recent_advice(self, kind: str, since: float, session_id: str | None = None) -> bool:
         q = "SELECT metadata FROM agent_events WHERE event_type='ADVICE' AND timestamp>=?"
         args: list[Any] = [since]

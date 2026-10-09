@@ -94,6 +94,9 @@ class EventType(StrEnum):
     POLICY_CHANGED = "POLICY_CHANGED"
     GUARD_BLOCKED = "GUARD_BLOCKED"
     ADVICE = "ADVICE"
+    TURN_SUMMARY = "TURN_SUMMARY"  # tokens/tools/subagents for one prompt->stop turn
+    CALIBRATION = "CALIBRATION"  # measured usage-per-token sample (learned locally)
+    COST = "COST"  # session cost sample from Claude Code's own estimate
 
 
 @dataclass

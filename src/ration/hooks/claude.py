@@ -18,7 +18,7 @@ import sys
 import time
 from typing import Any
 
-from .. import advisor, config
+from .. import advisor, config, transcript
 from ..models import AgentEvent, EventType
 from ..normalize import AGENT_TOOLS, is_premium, sig, tool_events
 from ..store import Store
@@ -71,7 +71,11 @@ def normalize(payload: dict[str, Any], cfg: dict[str, Any]) -> list[AgentEvent]:
             store_paths=store_paths,
         )
     if ev == "SubagentStop":
-        return one(E.SUBAGENT_ENDED, {"agent_type": payload.get("agent_type")})
+        meta: dict[str, Any] = {"agent_type": payload.get("agent_type")}
+        sl = transcript.read_slice(payload.get("agent_transcript_path"))
+        if sl.messages:  # exact subagent tokens from its own transcript
+            meta.update(by_model=sl.weighted_by_model(), wtok=round(sl.weighted), tokens=sl.total)
+        return one(E.SUBAGENT_ENDED, meta)
     if ev in ("PreCompact", "PostCompact"):
         return one(E.CONTEXT_COMPACTED, {"trigger": payload.get("trigger"), "phase": ev})
     if ev == "Stop":

@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .models import BudgetMode, Confidence, UsageSnapshot
+from .models import BudgetMode, Confidence, EventType, ResourceType, Source, UsageSnapshot
 
 LOOKBACK_HOURS = 3.0  # used when the window length is unknown
 MAX_LOOKBACK_HOURS = 24.0
@@ -231,6 +231,61 @@ def provider_budgets(
             has_backlog=has_backlog,
         )
         out.setdefault(snap.provider, ProviderBudget(snap.provider, [])).windows.append(wb)
+    for wb in usd_windows(store, cfg, now=now, has_backlog=has_backlog):
+        out.setdefault("claude", ProviderBudget("claude", [])).windows.append(wb)
+    return out
+
+
+# ---- dollar budgets for API-key users ---------------------------------------
+def usd_spend(store: Any, start: float, at: float) -> float:
+    """Dollars spent across all sessions in [start, at], from Claude Code's own
+    cumulative per-session cost estimate (statusline `cost.total_cost_usd`)."""
+    samples = store.events_of_type(EventType.COST, since=start - 2 * 86400, limit=20000)
+    per: dict[str, tuple[float, float]] = {}  # session -> (baseline before start, peak in range)
+    for e in samples:
+        if e.timestamp > at:
+            continue
+        usd = float(e.metadata.get("usd") or 0.0)
+        base, peak = per.get(e.session_id, (0.0, 0.0))
+        if e.timestamp < start:
+            per[e.session_id] = (usd, usd)
+        else:
+            per[e.session_id] = (base, max(peak, usd))
+    return sum(max(0.0, peak - base) for base, peak in per.values())
+
+
+def _period_start(now: float, days: int) -> float:
+    lt = time.localtime(now)
+    midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    return midnight - (lt.tm_wday * 86400 if days == 7 else 0)
+
+
+def usd_windows(store: Any, cfg: dict[str, Any], *, now: float, has_backlog: bool = False) -> list[WindowBudget]:
+    b = cfg["budget"]
+    out: list[WindowBudget] = []
+    for name, limit, days in (("daily_usd", b.get("daily_usd", 0), 1), ("weekly_usd", b.get("weekly_usd", 0), 7)):
+        if not limit:
+            continue
+        start = _period_start(now, days)
+        end = start + days * 86400
+        minutes = days * 24 * 60
+        then = max(start, now - lookback_hours(minutes) * 3600)
+
+        def snap(at: float, start: float = start, end: float = end, limit: float = limit, minutes: int = minutes, name: str = name) -> UsageSnapshot:
+            used = 100 * usd_spend(store, start, at) / float(limit)
+            return UsageSnapshot("claude", name, ResourceType.DOLLARS, used, end, minutes, Source.PROVIDER_CLI, Confidence.MEDIUM, at)
+
+        out.append(
+            window_budget(
+                snap(now),
+                [snap(then)] if then < now else [],
+                now=now,
+                reserve_percent=b["reserve_percent"],
+                conservative_pressure=b["conservative_pressure"],
+                aggressive_pressure=b["aggressive_pressure"],
+                has_backlog=has_backlog,
+            )
+        )
     return out
 
 

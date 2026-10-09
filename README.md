@@ -57,11 +57,20 @@ After `ration init`, keep working as usual. RATION speaks up only when it matter
 status line:  RATION · 5h 72% (reset 1h59m)  ⚠ 5h limit in ~40m
 ```
 
-- **Model + effort suggestion** when you submit a task-like prompt, compared with the model you're actually on. It never switches models for you, and it holds back premium suggestions when your window is under pressure.
+- **Model + effort suggestion** when you submit a task-like prompt, compared with the model and effort you're actually on (`/model …`, `/effort …`). It never switches anything for you, and holds back premium suggestions when your window is under pressure.
 - **Limit warnings before you hit the wall**, from your real pace (5-hour pace over the last ~30 min; weekly pace over ~17 h, so a burst of work doesn't cry wolf).
-- **Turn receipts**: what a heavy turn cost (only when ≥ 2% of the 5-hour window).
+- **Turn receipts**: what a heavy turn cost, in % of your 5-hour window (subscriptions), dollars (API keys) or tokens.
 - **Stuck-session tip** when you keep prompting an agent that's looping.
 - Each tip kind is rate-limited. `ration advisor off` silences all of it; thresholds live under `[advisor]` in `config.toml`.
+
+### How the advisor stays accurate (all local: no APIs, no LLM calls)
+
+| Concern | How it's handled |
+|---|---|
+| Keyword guesses misread prompts | Every classification has a confidence; model tips are **withheld when it's a guess**. The guess is corrected by the session (failing tests → debugging) and by **your own history in this repo** ("debugging turns here usually take ~45 tool calls"), learned from RATION's turn summaries. |
+| Needs the status line / a Pro-Max plan | Model and effort are read from the session transcript, so tips work with hooks alone. API-key users set `daily_usd` / `weekly_usd` in `[budget]`; spend comes from Claude Code's own `cost.total_cost_usd`, and pace alerts, `status` and the scheduler use it like a quota window. |
+| Usage % arrives late, receipts could be off | Each turn's tokens are counted **exactly** from the transcript (de-duplicated, subagents included from their own transcripts). The % is exact when a fresh reading exists; otherwise it's estimated from a usage-per-token rate **learned on your machine** (each turn's exact mark-to-mark delta at the next prompt, skipped when another session shared the window) and labelled `~… calibrated on this machine`. |
+| How to change effort | Detected live (`effort.level` from the status line, `effort` in the transcript) and suggested as `/effort low|medium|high`. |
 
 ## Quickstart
 

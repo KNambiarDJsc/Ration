@@ -21,7 +21,9 @@ core logic. `ration providers` re-detects features at runtime instead of trustin
 | Subagent visibility | `PreToolUse` on `Agent` tool (`subagent_type`, `description`, `model`), `SubagentStop`, Agent `tool_response.usage` | collab/sub-agent events in protocol | Claude: ✓ governance |
 | Native subagent limits | `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` (default 200), `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` (2.1.212+/2.1.217+) | n/a | RATION adds *budget-aware* limits (premium count, reserve) on top |
 | OpenTelemetry | metrics `claude_code.token.usage`, `cost.usage` (estimates), events `api_request`, `tool_result`, … — no quota attributes | `codex-rs/otel` | not used in V1 (needs a collector); candidate for later |
-| Session logs | `~/.claude/projects/<proj>/<session>.jsonl` (private format) | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` | listing only (Claude); usage + tool events (Codex) |
+| Session logs | `~/.claude/projects/<proj>/<session>.jsonl` (private format; path given to every hook as `transcript_path`, subagents as `agent_transcript_path`) | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` | Claude: per-turn tokens, model, effort (read-only: `message.usage`/`model`, top-level `effort`; de-duplicated by message id + request id; content never read). Codex: usage + tool events |
+| Session cost estimate | statusLine `cost.total_cost_usd` (all users; list-price estimate; resets on `/clear`) | n/a | dollar budgets for API-key users |
+| Live effort | statusLine `effort.level` (`low`…`max`), transcript `effort`; changed in-session with `/effort` | `model_reasoning_effort` | effort suggestions |
 | Instruction files | CLAUDE.md | AGENTS.md | never written; `ration snippet` prints a fragment |
 
 ## What is official vs. estimated

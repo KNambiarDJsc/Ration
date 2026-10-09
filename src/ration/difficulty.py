@@ -52,6 +52,9 @@ class Assessment:
     risk: float
     uncertainty: float
     reasons: list[str] = field(default_factory=list)
+    # "high": explicit type rule + supporting evidence; "medium": explicit type rule;
+    # "low": nothing matched (default type). Advice is withheld at "low".
+    confidence: str = "low"
 
 
 def repo_file_count(repo: str | None) -> int | None:
@@ -70,9 +73,10 @@ def assess(description: str, *, repo_files: int | None = None, previous_attempts
     text = description.lower()
     reasons: list[str] = []
     ttype, base = TaskType.CODE_GENERATION, 0.45
+    matched_rule = False
     for t, b, pats in TYPE_RULES:
         if any(re.search(p, text) for p in pats):
-            ttype, base = t, b
+            ttype, base, matched_rule = t, b, True
             break
     reasons.append(f"type={ttype} (base {base:.2f})")
     d = base
@@ -113,12 +117,24 @@ def assess(description: str, *, repo_files: int | None = None, previous_attempts
     if ttype in (TaskType.ARCHITECTURE, TaskType.MIGRATION):
         risk += 0.15
 
+    evidence = sum(1 for r in reasons if r.startswith("+ ") and "short/ambiguous" not in r and "attempt" not in r)
+    evidence += int(bool(TRACE_RE.search(description)))
+    if not matched_rule:
+        confidence = "low"
+    elif evidence or ttype == TaskType.TRIVIAL_EDIT:
+        confidence = "high"
+    else:
+        confidence = "medium"
+    if words < 6 and confidence == "high":
+        confidence = "medium"
+
     return Assessment(
         task_type=ttype,
         difficulty=round(min(1.0, d), 3),
         risk=round(min(1.0, risk), 3),
         uncertainty=round(max(0.0, min(1.0, uncertainty)), 3),
         reasons=reasons,
+        confidence=confidence,
     )
 
 
