@@ -397,6 +397,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if st["disable_all_hooks"]:
             check(False, "disableAllHooks is set in Claude settings: RATION hooks will not run", warn=True)
     check(True, f"guard mode: {cfg['guard']['mode']}  (change with `ration guard on|off`)")
+    check(True, f"advisor: {'on' if cfg['advisor']['enabled'] else 'off'}  (change with `ration advisor on|off`)")
     lat = hook_latency()
     check(lat is not None and lat < 500, f"hook latency {lat:.0f} ms (median of 5)" if lat else "hook failed to run", "hooks must stay fast; check your Python install")
     log = home / "hook-errors.log"
@@ -425,7 +426,8 @@ def cmd_privacy(args: argparse.Namespace) -> int:
     console.print(t)
     console.print("[bold]Stored[/]: event types, tool names, hashes of tool inputs, test runner names and pass/fail counts,")
     console.print(f"  token/cost numbers, usage percentages, task descriptions you pass to `ration run`, file paths ({'on' if cfg['privacy']['store_paths'] else 'off'}).")
-    console.print("[bold]Never stored[/]: source code, diffs, prompts (only their length), full commands, tool output, credentials.")
+    console.print("  For prompts: only length, an estimated task type/difficulty, and the usage % at submit time.")
+    console.print("[bold]Never stored[/]: source code, diffs, prompt text, full commands, tool output, credentials.")
     console.print("Delete everything: [bold]ration privacy --purge[/]", style="dim")
     return 0
 
@@ -506,6 +508,20 @@ def cmd_guard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_advisor(args: argparse.Namespace) -> int:
+    on = args.state == "on"
+    config.set_value("advisor", "enabled", on)
+    if on:
+        console.print("advisor: on. In Claude Code you'll see RATION tips when they matter:")
+        console.print("  · on prompt submit: model/effort suggestion, limit warnings, stuck-session tip", style="dim")
+        console.print("  · after a turn: how much of your 5-hour window it used (only if ≥ 2%)", style="dim")
+        console.print("  · in the status line: '⚠ 5h limit in ~35m' when you're on pace to hit it", style="dim")
+        console.print("Tips are shown to you only, never sent to the model. Tune them under [advisor] in config.toml.", style="dim")
+    else:
+        console.print("advisor: off (observation and guard mode are unaffected)")
+    return 0
+
+
 def cmd_snippet(args: argparse.Namespace) -> int:
     from .providers.codex import agents_md_fragment
 
@@ -550,7 +566,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             console.print(f"  {e}", style="red")
     codex_on = ask("Enable Codex integration (reads usage from local Codex logs only)?")
     config.set_value("codex", "enabled", codex_on)
-    console.print("\nEverything stays on this machine. See [bold]ration privacy[/].")
+    console.print(
+        "\nIn Claude Code you'll now see short RATION tips when they matter: which model fits the task you just typed,"
+        " a warning before you hit your 5-hour limit, and what each heavy turn cost. Off: [bold]ration advisor off[/]."
+    )
+    console.print("Everything stays on this machine. See [bold]ration privacy[/].")
     console.print("Next: [bold]ration status[/] · [bold]ration watch[/] · [bold]ration plan \"<task>\"[/]")
     return 0
 
@@ -598,6 +618,8 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("action", choices=["install", "uninstall"])
     g = sub.add_parser("guard", help="turn enforcement on/off (default: observe only)")
     g.add_argument("state", choices=["on", "off"])
+    ad = sub.add_parser("advisor", help="in-session tips: model suggestions, limit warnings, turn receipts")
+    ad.add_argument("state", choices=["on", "off"])
     sub.add_parser("snippet", help="print an optional AGENTS.md / CLAUDE.md fragment (never written for you)")
     return p
 
@@ -617,6 +639,7 @@ COMMANDS = {
     "hooks": cmd_hooks,
     "statusline": cmd_statusline,
     "guard": cmd_guard,
+    "advisor": cmd_advisor,
     "snippet": cmd_snippet,
 }
 

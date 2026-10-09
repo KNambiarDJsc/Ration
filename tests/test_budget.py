@@ -21,14 +21,25 @@ def snap(used, reset_in_h, captured_at, window_minutes=WEEK_MIN, provider="claud
 
 def test_target_burn_and_pressure_from_recent_samples():
     now = 1_000_000.0
-    prev = snap(40, 50.5, now - 0.5 * H)
-    cur = snap(45, 50, now)  # 5% in 30 min = 10%/h
+    prev = snap(30, 55, now - 5 * H)
+    cur = snap(45, 50, now)  # 15% in 5 h = 3%/h (weekly pace is measured over hours)
+    prev.reset_at = cur.reset_at
     w = window_budget(cur, [prev], now=now)
-    assert abs(w.observed_burn - 10.0) < 1e-6
+    assert w.burn_method == "recent_samples" and w.reliable
+    assert abs(w.observed_burn - 3.0) < 1e-6
     assert abs(w.target_burn - 55 / 50) < 1e-6  # remaining / hours to reset
-    assert w.burn_pressure > 9
+    assert w.burn_pressure > 2.5
     assert w.mode == BudgetMode.CONSERVATIVE
-    assert w.depletes_early_hours and w.depletes_early_hours > 40
+    assert w.depletes_early_hours and w.depletes_early_hours > 30
+
+
+def test_short_burst_is_not_weekly_pace():
+    now = 1_500_000.0
+    prev = snap(40, 50, now - 0.5 * H)
+    cur = snap(45, 50, now)
+    prev.reset_at = cur.reset_at
+    w = window_budget(cur, [prev], now=now)
+    assert w.burn_method == "window_average"  # 30 min is too short a sample for a 7-day window
 
 
 def test_overspending_is_conservative():

@@ -19,8 +19,9 @@ import sys
 import time
 from typing import Any
 
-from .. import config
-from ..models import Confidence, ResourceType, Source, UsageSnapshot
+from .. import advisor, config
+from ..budget import provider_budgets
+from ..models import AgentEvent, Confidence, EventType, ResourceType, Source, UsageSnapshot
 from ..shell import shell_argv
 from ..store import Store
 
@@ -103,6 +104,25 @@ def run_chained(command: str, raw: bytes) -> str | None:
         return None
 
 
+def record_model(payload: dict[str, Any], store: Store) -> None:
+    """Remember the session's current model so the advisor can compare against it."""
+    sid = payload.get("session_id")
+    model = (payload.get("model") or {}).get("id") if isinstance(payload.get("model"), dict) else payload.get("model")
+    if not sid or not model:
+        return
+    last = store.last_event(str(sid), EventType.MODEL_SELECTED)
+    if last is None or last.metadata.get("model") != model:
+        store.add_event(AgentEvent("claude", str(sid), EventType.MODEL_SELECTED, {"model": model, "source": "statusline"}))
+
+
+def alert_segment(store: Store, cfg: dict[str, Any]) -> str | None:
+    adv = cfg["advisor"]
+    if not (adv["enabled"] and adv["budget_alerts"]):
+        return None
+    tip = advisor.budget_alert(provider_budgets(store, cfg), short=True)
+    return tip[1] if tip else None
+
+
 def main() -> int:
     raw = sys.stdin.buffer.read()
     try:
@@ -110,13 +130,18 @@ def main() -> int:
     except ValueError:
         payload = {}
     cfg = config.load()
+    segment = None
     try:
         with Store() as store:
             record(payload, store)
+            record_model(payload, store)
+            segment = alert_segment(store, cfg)
     except Exception:
         pass
     chained = run_chained(cfg["claude"].get("chained_statusline", ""), raw)
     text = chained if chained is not None else own_line(payload)
+    if segment:
+        text = f"{text}  {segment}"
     sys.stdout.buffer.write(text.encode("utf-8"))  # Claude Code reads UTF-8; Windows stdout may be cp1252
     sys.stdout.flush()
     return 0

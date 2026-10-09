@@ -267,6 +267,33 @@ class Store:
             for r in reversed(rows)
         ]
 
+    def last_event(self, session_id: str | None, event_type: EventType) -> AgentEvent | None:
+        q = "SELECT * FROM agent_events WHERE event_type=?"
+        args: list[Any] = [str(event_type)]
+        if session_id is not None:
+            q += " AND session_id=?"
+            args.append(session_id)
+        r = self.conn.execute(q + " ORDER BY id DESC LIMIT 1", args).fetchone()
+        if r is None:
+            return None
+        return AgentEvent(
+            provider=r["provider"],
+            session_id=r["session_id"],
+            event_type=EventType(r["event_type"]),
+            metadata=json.loads(r["metadata"]),
+            run_id=r["run_id"],
+            task_id=r["task_id"],
+            timestamp=r["timestamp"],
+        )
+
+    def recent_advice(self, kind: str, since: float, session_id: str | None = None) -> bool:
+        q = "SELECT metadata FROM agent_events WHERE event_type='ADVICE' AND timestamp>=?"
+        args: list[Any] = [since]
+        if session_id is not None:
+            q += " AND session_id=?"
+            args.append(session_id)
+        return any(json.loads(r[0]).get("kind") == kind for r in self.conn.execute(q, args))
+
     def active_sessions(self, since: float) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT provider, session_id, MIN(timestamp) AS first_at, MAX(timestamp) AS last_at,"

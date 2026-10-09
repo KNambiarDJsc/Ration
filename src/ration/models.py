@@ -93,6 +93,7 @@ class EventType(StrEnum):
     RUN_STOPPED = "RUN_STOPPED"
     POLICY_CHANGED = "POLICY_CHANGED"
     GUARD_BLOCKED = "GUARD_BLOCKED"
+    ADVICE = "ADVICE"
 
 
 @dataclass

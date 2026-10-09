@@ -18,7 +18,7 @@ import sys
 import time
 from typing import Any
 
-from .. import config
+from .. import advisor, config
 from ..models import AgentEvent, EventType
 from ..normalize import AGENT_TOOLS, is_premium, sig, tool_events
 from ..store import Store
@@ -192,6 +192,7 @@ def stuck_check(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> t
 def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[str, Any] | None:
     ev = payload.get("hook_event_name", "")
     output: dict[str, Any] | None = None
+    message: str | None = None
     if ev == "PreToolUse":
         if payload.get("tool_name") in AGENT_TOOLS:
             events, output = guard_subagent(payload, cfg, store)
@@ -199,6 +200,14 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
             events = []
     else:
         events = normalize(payload, cfg)
+    if ev == "UserPromptSubmit":
+        adv_events, meta, message = advisor.on_prompt(payload, cfg, store)
+        if events:
+            events[0].metadata.update(meta)
+        events += adv_events
+    elif ev == "Stop":
+        adv_events, message = advisor.on_stop(payload, cfg, store)
+        events += adv_events
     if events:
         store.add_events(events)
     if ev in ("PostToolUse", "PostToolUseFailure"):
@@ -206,6 +215,9 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
         if sevents:
             store.add_events(sevents)
         output = output or sout
+    if message:
+        # systemMessage is shown to the developer only; it never enters the model's context.
+        output = {**(output or {}), "systemMessage": message}
     return output
 
 

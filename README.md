@@ -37,6 +37,32 @@ Its objective is not "minimize tokens". It is **maximize verified useful enginee
 - **Subagent governance.** Twelve premium subagents for a task that needs three? Observe mode tells you; guard mode denies the spawn with a reason the agent can act on.
 - **Progressive escalation.** `ration run` starts cheap when that is likely enough, escalates only when there's no progress, and reserves premium models for high-value work with budget headroom.
 
+## In your Claude Code session (zero extra terminals)
+
+After `ration init`, keep working as usual. RATION speaks up only when it matters, and only to you (tips use the hook `systemMessage` channel and never enter the model's context):
+
+```text
+> fix the typo in the README quickstart section please
+  RATION: this looks like a small edit: haiku should be enough (you're on claude-opus-5-5).
+          `/model haiku` saves premium quota.
+
+> find out why the websocket reconnect logic occasionally deadlocks
+  RATION: this looks like hard debugging (race condition, deadlock): consider `/model opus`
+          with high effort. A stronger first attempt is usually cheaper than several weak ones.
+
+  RATION: at this pace you'll hit your 5-hour limit in ~40m (it resets in 2h00m).
+  RATION: that turn used ~7% of your 5-hour window (3 subagents, 41 tool calls).
+  RATION: your weekly window still has 55% left and resets in 9h. Unused quota is lost at reset.
+
+status line:  RATION · 5h 72% (reset 1h59m)  ⚠ 5h limit in ~40m
+```
+
+- **Model + effort suggestion** when you submit a task-like prompt, compared with the model you're actually on. It never switches models for you, and it holds back premium suggestions when your window is under pressure.
+- **Limit warnings before you hit the wall**, from your real pace (5-hour pace over the last ~30 min; weekly pace over ~17 h, so a burst of work doesn't cry wolf).
+- **Turn receipts**: what a heavy turn cost (only when ≥ 2% of the 5-hour window).
+- **Stuck-session tip** when you keep prompting an agent that's looping.
+- Each tip kind is rate-limited. `ration advisor off` silences all of it; thresholds live under `[advisor]` in `config.toml`.
+
 ## Quickstart
 
 ```bash
@@ -125,11 +151,11 @@ Nine signals (repeated identical tool calls, repeated command sequences, the sam
 | A premium always | 88.0 | 42.9 | 10.08 | 178 | 887 | 30.8 | 23% | 2h |
 | B cheapest always | 45.4 | 22.3 | 3.14 | 75 | 0 | 30.1 | 88% | 0h |
 | C static routing | 88.0 | 43.3 | 7.43 | 232 | 506 | 24.5 | 43% | 4h |
-| **D RATION adaptive** | 82.4 | **44.1** | **5.24** | 75 | 214 | 25.3 | 62% | 0h |
-| D− RATION, no stuck interrupt | 81.2 | 44.0 | 6.92 | 219 | 236 | 30.4 | 51% | 0h |
+| **D RATION adaptive** | 81.8 | 43.8 | **5.32** | 74 | 217 | 26.0 | 62% | 0h |
+| D− RATION, no stuck interrupt | 82.0 | 44.7 | 6.71 | 217 | 226 | 30.3 | 52% | 0h |
 
 Read this honestly:
-- In this world RATION gets the most task value at ~30% lower cost per resolved task than static routing, and never runs a provider dry. It resolves *fewer* tasks than A/C because it deliberately stops low-value loops.
+- In this world RATION delivers about the same task value as premium-always and static routing (differences between A, C, D and D− are within seed noise) at ~28% lower cost per resolved task than static routing and ~47% lower than premium-always, and it never runs a provider dry. It resolves *fewer* tasks than A/C because it deliberately stops low-value loops.
 - Part of D's efficiency comes from one assumption: stuck attempts cost 2× without interruption and 0.6× with it. D− isolates that assumption.
 - **This is not evidence about real agents.** Real-task benchmarks (SWE-bench-style) are on the roadmap; until then, treat these numbers as a behaviour check of the policy.
 

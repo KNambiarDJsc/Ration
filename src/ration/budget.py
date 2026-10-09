@@ -19,8 +19,17 @@ from typing import Any
 
 from .models import BudgetMode, Confidence, UsageSnapshot
 
-LOOKBACK_HOURS = 3.0
+LOOKBACK_HOURS = 3.0  # used when the window length is unknown
+MAX_LOOKBACK_HOURS = 24.0
 MIN_SPAN_MINUTES = 10.0
+
+
+def lookback_hours(window_minutes: int | None) -> float:
+    """Measure pace over ~10% of the window: 30 min for a 5-hour window, ~17 h
+    for a weekly one, so a short burst of work doesn't read as weekly pace."""
+    if not window_minutes:
+        return LOOKBACK_HOURS
+    return min(MAX_LOOKBACK_HOURS, max(0.5, window_minutes / 60 * 0.1))
 
 
 @dataclass
@@ -39,6 +48,21 @@ class WindowBudget:
     confidence: Confidence
     source: str
     reasons: list[str] = field(default_factory=list)
+    burn_method: str = "insufficient_history"
+    elapsed_hours: float | None = None
+
+    @property
+    def reliable(self) -> bool:
+        """Is the pace estimate solid enough to warn a human about?"""
+        if self.burn_method == "recent_samples":
+            return True
+        return self.burn_method == "window_average" and (self.elapsed_hours or 0) >= 0.5
+
+    @property
+    def hours_to_exhaust(self) -> float | None:
+        if not self.observed_burn or self.observed_burn <= 0:
+            return None
+        return self.remaining_percent / self.observed_burn
 
 
 @dataclass
@@ -82,18 +106,20 @@ def _observed_burn(
 ) -> tuple[float | None, str]:
     """Percent-per-hour burn inside the current window."""
     start = snap.window_start
+    lb = lookback_hours(snap.window_minutes)
+    min_span_h = max(MIN_SPAN_MINUTES / 60, lb * 0.25)
     same_window = [
         h
         for h in history
         if (start is None or h.captured_at >= start)
         and (snap.reset_at is None or h.reset_at is None or abs(h.reset_at - snap.reset_at) < 120)
-        and h.captured_at >= now - LOOKBACK_HOURS * 3600
+        and h.captured_at >= now - lb * 3600
     ]
     pts = sorted(same_window + [snap], key=lambda s: s.captured_at)
     if len(pts) >= 2:
         first, last = pts[0], pts[-1]
         span_h = (last.captured_at - first.captured_at) / 3600
-        if span_h * 60 >= MIN_SPAN_MINUTES:
+        if span_h >= min_span_h:
             return max(0.0, (last.used_percent - first.used_percent) / span_h), "recent_samples"
     if start is not None:
         elapsed_h = (now - start) / 3600
@@ -180,6 +206,8 @@ def window_budget(
         confidence=confidence,
         source=str(snap.source),
         reasons=reasons,
+        burn_method=method,
+        elapsed_hours=None if snap.window_start is None else max(0.0, (now - snap.window_start) / 3600),
     )
 
 
@@ -192,7 +220,7 @@ def provider_budgets(
     for snap in store.latest_usage():
         if snap.reset_at is not None and snap.reset_at < now:
             continue  # window already reset; the old number is meaningless
-        hist = store.usage_history(snap.provider, snap.window, now - LOOKBACK_HOURS * 3600)
+        hist = store.usage_history(snap.provider, snap.window, now - lookback_hours(snap.window_minutes) * 3600)
         wb = window_budget(
             snap,
             hist,

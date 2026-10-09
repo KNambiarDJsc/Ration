@@ -33,11 +33,23 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "require_explicit_model": False,
         "inject_stuck_context": True,
     },
+    "advisor": {
+        # In-flow tips shown to the developer (never to the model). Advisory only.
+        "enabled": True,
+        "model_suggestions": True,
+        "budget_alerts": True,
+        "turn_receipts": True,
+        # Only show a per-turn receipt when a turn used at least this % of the 5h window.
+        "receipt_min_percent": 2.0,
+        # Don't repeat the same kind of tip in a session within this many minutes.
+        "quiet_minutes": 20,
+    },
     "claude": {
         "enabled": True,
         "cheap": "haiku",
         "strong": "sonnet",
         "premium": "opus",
+        "cheap_markers": "haiku",
         "premium_markers": "opus",
         "chained_statusline": "",
     },
