@@ -59,6 +59,7 @@ class Slice:
     last_model: str | None = None
     last_effort: str | None = None
     last_ts: float | None = None
+    last_ctx: int = 0  # prompt size of the most recent call
     end_offset: int = 0
     messages: int = 0
 
@@ -199,6 +200,8 @@ def read_slice(path: str | None, offset: int = 0, *, skip_partial_first: bool = 
             continue
         seen.add(key)
         out.by_model.setdefault(model, Tokens()).add_usage(m["usage"])
+        u = m["usage"]
+        out.last_ctx = int(u.get("input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0) + int(u.get("cache_read_input_tokens") or 0)
         out.messages += 1
     out.end_offset = offset + consumed
     return out

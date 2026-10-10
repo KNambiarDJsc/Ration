@@ -44,12 +44,21 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "budget_alerts": True,
         "turn_receipts": True,
         "resume_tip": True,  # say what resuming an expired-cache session will rebuild
+        # Suggest a restart kit when a session's context passes this many tokens (0 = off).
+        "context_tip_tokens": 150000,
         # Only show a per-turn receipt when a turn used at least this much.
         "receipt_min_percent": 2.0,  # of the 5-hour window (subscriptions)
         "receipt_min_usd": 0.25,  # API-key users
         "receipt_min_mtokens": 1.0,  # weighted million tokens, when no % or $ is known
         # Don't repeat the same kind of tip in a session within this many minutes.
         "quiet_minutes": 20,
+    },
+    "handoff": {
+        # When true, `/clear` carries a restart kit into the new session automatically.
+        # Off by default: it adds text to the model's context, so it is opt-in.
+        "auto": False,
+        "max_chars": 3000,
+        "ttl_minutes": 30,
     },
     "claude": {
         "enabled": True,

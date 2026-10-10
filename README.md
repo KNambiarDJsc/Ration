@@ -86,6 +86,44 @@ before your first reply. If you only need the gist, start fresh (/clear) with a 
 of where you were, or run /compact first. If you need the full thread, carry on.
 ```
 
+## `/clear` without amnesia: `ration handoff`
+
+The X-ray finds the cause (huge sessions re-reading huge contexts), but people keep those sessions alive because `/clear` loses the thread and `/compact` costs a model call and is lossy. `ration handoff` removes the excuse. It builds a **restart kit** from the session's record and your repo's real git state. **No model is used**, so it's free, instant, and can't hallucinate:
+
+```text
+$ ration handoff
+# Restart kit: shop (session 7f3a91c2, 12 min ago, context was 212k tokens)
+
+## Goal
+fix the flaky refresh in src/auth.py, tests in tests/test_auth.py must pass
+Recent asks:
+- try a lock around the token cache
+
+## State of the repo
+Branch: `fix/auth-refresh`
+     M src/auth.py
+    ?? tests/test_refresh_race.py
+Diff: 1 file changed, 14 insertions(+), 3 deletions(-)
+
+## What happened
+- Changed: `src/auth.py` (x4)
+- Last test run: `pytest -q tests/test_auth.py` → 9 passed, 2 failed; failing: test_refresh_race
+- 1 tool call(s) were denied by permissions (check your allow rules before retrying).
+
+## Where it left off
+> I added a lock; two tests still fail because the refresh future is shared. Next: make the future per-request.
+
+## Next
+Continue from "Where it left off". Verify with `pytest -q tests/test_auth.py`.
+```
+
+```bash
+ration handoff --copy        # then /clear and paste: ~700 tokens instead of a 200k context
+ration handoff --auto on     # opt in: after /clear, RATION adds the kit to the new session itself
+```
+
+When a session's context passes ~150k tokens, the advisor suggests exactly this. It's a map, not the full history: the new session re-reads the files it needs instead of dragging everything along.
+
 ## In your Claude Code session
 
 After `ration init` you don't need another terminal. Tips appear as Claude Code notices, are shown **only to you**, and **never enter the model's context** (they use the hook `systemMessage` channel):
@@ -140,6 +178,7 @@ What `ration run` does:
 | Command | What it does |
 |---|---|
 | `ration init` | Detect agents, install hooks + status line (asks first, backs up settings) |
+| `ration handoff [--copy] [--auto on\|off]` | Restart kit from a session + git state, so `/clear` doesn't lose the thread (no model call) |
 | `ration xray [--days N]` | Where your usage went (context size, idle rebuilds, subagents, models) and what to change |
 | `ration status` | Usage per window, burn pressure, reset forecast, recommendation |
 | `ration watch` | Live view of sessions: progress, stuck score, reasons, suggestion |
@@ -204,7 +243,8 @@ What `ration run` does:
 
 - **All data stays on your machine** in SQLite (`~/.config/ration/ration.db`). There is no upload code path and no telemetry.
 - **Stored:** event types, tool names, *hashes* of tool inputs, test runner names and pass/fail counts, token/cost numbers, usage percentages, file paths (can be turned off). For prompts: only length, estimated task type/difficulty, and usage % at submit time.
-- **Never stored:** source code, diffs, prompt text, full commands, tool output, credentials.
+- **Never stored in the database:** source code, diffs, prompt text, full commands, tool output, credentials.
+- **One deliberate exception, opt-in:** `ration handoff` reads message text at run time to write the restart kit, so it contains short excerpts of your prompts and the last reply. It's only printed/copied when you ask. With `handoff --auto on`, it's written to a local temp file (`~/.config/ration/handoffs/`) that is deleted as soon as the new session uses it, or after 30 minutes.
 - `ration privacy` shows exactly what's stored; `ration privacy --purge` deletes it.
 
 ## Configuration

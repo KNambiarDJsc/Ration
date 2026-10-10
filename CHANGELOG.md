@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 - **`ration xray`**: read-only analysis of past Claude Code sessions (main + subagent transcripts, content never read) showing where usage went by token type, model, day, project and session, with ranked, quantified recommendations (long contexts, idle cache rebuilds, subagent fan-out, premium share, one runaway session). Works from day one, no setup.
+- **`ration handoff`**: deterministic restart kit (goal, changed files, last test result and failing tests, denied actions, git state, where the session left off) built from a session transcript and the repo, with no model call; `--copy`, `--out`, and opt-in `--auto on` that carries the kit into the new session after `/clear` (temp file, deleted on use or after the TTL). The advisor suggests it when a session's context passes `advisor.context_tip_tokens`.
 - **Resume-cost tip**: on resuming a session whose prompt cache has expired, say what the rebuild will cost and suggest `/clear` + summary or `/compact` first.
 
 ## [0.1.0] - 2026-10-10

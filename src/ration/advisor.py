@@ -286,6 +286,24 @@ def use_it_tip(budgets: dict[str, ProviderBudget]) -> Tip | None:
     return None
 
 
+def context_tip(tpath: str | None, cfg: dict[str, Any]) -> Tip | None:
+    """When the context is large, every call re-reads all of it. Offer the free way out."""
+    limit = int(cfg["advisor"].get("context_tip_tokens", 0))
+    if not limit or not tpath:
+        return None
+    ctx = transcript.tail(tpath).last_ctx
+    if ctx < limit:
+        return None
+    if cfg["handoff"]["auto"]:
+        how = "Just `/clear`: RATION carries a restart kit (goal, changed files, last test, git state) into the new session."
+    else:
+        how = "Run `ration handoff --copy`, then `/clear` and paste: a free restart kit (goal, changed files, last test, git state), no model call."
+    return (
+        "context:large",
+        f"this session's context is ~{fmt_tok(ctx)} tokens and every call re-reads all of it. {how}",
+    )
+
+
 def stuck_tip(events: list[AgentEvent]) -> Tip | None:
     r = detect(events, now=time.time())
     if r.band not in ("intervene", "likely_stuck"):
@@ -392,6 +410,9 @@ def on_prompt(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: flo
         if t:
             tips.append(t)
     t = stuck_tip(store.events(session_id=sid, limit=300))
+    if t:
+        tips.append(t)
+    t = context_tip(tpath, cfg)
     if t:
         tips.append(t)
     if adv["model_suggestions"] and a:

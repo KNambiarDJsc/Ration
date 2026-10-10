@@ -447,6 +447,13 @@ def cmd_privacy(args: argparse.Namespace) -> int:
     console.print(f"  token/cost numbers, usage percentages, task descriptions you pass to `ration run`, file paths ({'on' if cfg['privacy']['store_paths'] else 'off'}).")
     console.print("  For prompts: only length, an estimated task type/difficulty, and the usage % at submit time.")
     console.print("[bold]Never stored[/]: source code, diffs, prompt text, full commands, tool output, credentials.")
+    hd = config.ration_home() / "handoffs"
+    pending = len(list(hd.glob("*.md"))) if hd.is_dir() else 0
+    auto = "ON" if cfg["handoff"]["auto"] else "off"
+    console.print(
+        f"[bold]Restart kits[/] (opt-in, `ration handoff --auto`): {auto}; {pending} pending temp file(s) in {hd}. "
+        "They hold short prompt excerpts and are deleted when used or after 30 minutes."
+    )
     console.print("Delete everything: [bold]ration privacy --purge[/]", style="dim")
     return 0
 
@@ -524,6 +531,45 @@ def cmd_guard(args: argparse.Namespace) -> int:
     console.print(f"guard mode: {mode}")
     if mode == "guard":
         console.print("Hooks may now deny wasteful subagent spawns and inject stuck warnings. `ration guard off` to return to observe-only.", style="dim")
+    return 0
+
+
+def cmd_handoff(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from . import handoff as ho
+
+    if args.auto:
+        on = args.auto == "on"
+        config.set_value("handoff", "auto", on)
+        if on:
+            console.print("handoff auto: on. After `/clear` in Claude Code, RATION adds a restart kit to the new session.")
+            console.print(
+                "The kit holds short excerpts of your prompts and the last reply, written to a local temp file that is deleted when used "
+                "or after 30 minutes. Off: ration handoff --auto off",
+                style="dim",
+            )
+        else:
+            console.print("handoff auto: off")
+        return 0
+    cfg = config.load()
+    cwd = os.path.abspath(args.cwd)
+    path = Path(args.transcript) if args.transcript else ho.find_session(cwd, session=args.session)
+    if path is None or not path.exists():
+        console.print(f"No Claude Code session found for {cwd}. Run from your project folder, or pass --session <id>.", style="yellow")
+        return 1
+    text = ho.build(path, cwd, max_chars=args.max_chars or int(cfg["handoff"]["max_chars"]))
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        console.print(f"Wrote {args.out} (~{len(text) // 4} tokens)", style="green")
+    elif args.copy:
+        if ho.clipboard(text):
+            console.print(f"Copied restart kit to the clipboard (~{len(text) // 4} tokens). `/clear`, then paste.", style="green")
+        else:
+            console.print("No clipboard tool found; printing instead.\n", style="yellow")
+            print(text)
+    else:
+        print(text)
     return 0
 
 
@@ -691,6 +737,14 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("action", choices=["install", "uninstall"])
     g = sub.add_parser("guard", help="turn enforcement on/off (default: observe only)")
     g.add_argument("state", choices=["on", "off"])
+    ho = sub.add_parser("handoff", help="restart kit: /clear without losing the thread (no model call)")
+    ho.add_argument("--session", default=None, help="session id (prefix) instead of the latest one for this folder")
+    ho.add_argument("--cwd", default=".")
+    ho.add_argument("--transcript", default=None, help=argparse.SUPPRESS)
+    ho.add_argument("--copy", action="store_true", help="copy to the clipboard")
+    ho.add_argument("--out", default=None, help="write to a file")
+    ho.add_argument("--max-chars", type=int, default=0)
+    ho.add_argument("--auto", choices=["on", "off"], default=None, help="carry a kit into the new session after /clear")
     xr = sub.add_parser("xray", help="where did your usage go? read-only analysis of past sessions, with what to change")
     xr.add_argument("--days", type=float, default=7)
     xr.add_argument("--cap", type=int, default=120_000, help="context size (tokens) treated as 'long' (default 120000)")
@@ -719,6 +773,7 @@ COMMANDS = {
     "guard": cmd_guard,
     "advisor": cmd_advisor,
     "xray": cmd_xray,
+    "handoff": cmd_handoff,
     "snippet": cmd_snippet,
 }
 

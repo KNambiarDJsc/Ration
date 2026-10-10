@@ -19,7 +19,7 @@ import sys
 import time
 from typing import Any
 
-from .. import advisor, config, transcript
+from .. import advisor, config, handoff, transcript
 from ..models import AgentEvent, EventType
 from ..normalize import AGENT_TOOLS, is_premium, sig, tool_events
 from ..store import Store
@@ -194,6 +194,32 @@ def stuck_check(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> t
     return evs, out
 
 
+def save_for_clear(payload: dict[str, Any], cfg: dict[str, Any]) -> None:
+    """Opt-in (`handoff.auto`): when the developer runs /clear, remember a restart kit
+    for this directory so the next session can start with it."""
+    h = cfg["handoff"]
+    if not h["auto"] or payload.get("reason") != "clear" or not payload.get("transcript_path"):
+        return
+    cwd = payload.get("cwd") or os.getcwd()
+    text = handoff.build(payload["transcript_path"], cwd, max_chars=int(h["max_chars"]))
+    handoff.save_pending(cwd, text)
+
+
+def carry_over(payload: dict[str, Any], cfg: dict[str, Any]) -> tuple[str, str] | None:
+    h = cfg["handoff"]
+    if not h["auto"] or payload.get("source") != "clear":
+        return None
+    cwd = payload.get("cwd") or os.getcwd()
+    text = handoff.take_pending(cwd, float(h["ttl_minutes"]))
+    if not text:
+        return None
+    note = (
+        f"RATION: carried a restart kit (~{len(text) // 4} tokens: goal, changed files, last test, git state) "
+        "from the session you just cleared. Turn off with `ration handoff --auto off`."
+    )
+    return text, note
+
+
 def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[str, Any] | None:
     ev = payload.get("hook_event_name", "")
     output: dict[str, Any] | None = None
@@ -207,6 +233,13 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
         events = normalize(payload, cfg)
     if ev == "SessionStart":
         message = advisor.on_session_start(payload, cfg)
+        carried = carry_over(payload, cfg)
+        if carried:
+            text, note = carried
+            output = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}
+            message = note
+    elif ev == "SessionEnd":
+        save_for_clear(payload, cfg)
     elif ev == "UserPromptSubmit":
         adv_events, meta, message = advisor.on_prompt(payload, cfg, store)
         if events:
