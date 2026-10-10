@@ -51,6 +51,14 @@ def test_simulation_is_reproducible_and_respects_budgets():
     assert m1.premium_spent < a.premium_spent  # D only goes premium when justified
 
 
+def test_cli_run_with_mock_provider_and_checks(capsys, tmp_path):
+    exe = sys.executable.replace("\\", "/")
+    check = f'"{exe}" -c "print(\'1 failed, 3 passed\'); raise SystemExit(1)"'
+    rc = cli.main(["run", "fix", "the", "failing", "parser", "test", "--provider", "mock", "--check", check, "--cwd", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1 and "Baseline" in out and "3 passed, 1 failed" in out and "attempt" in out
+
+
 def test_cli_smoke(capsys):
     assert cli.main(["plan", "fix", "the", "flaky", "login", "test"]) == 0
     assert cli.main(["status"]) == 0

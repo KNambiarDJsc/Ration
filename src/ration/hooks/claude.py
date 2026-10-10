@@ -14,6 +14,7 @@ Contract:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from typing import Any
@@ -209,9 +210,15 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
         if events:
             events[0].metadata.update(meta)
         events += adv_events
-    elif ev == "Stop":
-        adv_events, message = advisor.on_stop(payload, cfg, store)
+    elif ev in ("PostToolUse", "PostToolUseFailure", "Stop"):
+        store.add_events(events)
+        events = []
+        adv_events, message = advisor.deferred_model_tip(payload, cfg, store)
         events += adv_events
+        if ev == "Stop":
+            stop_events, receipt = advisor.on_stop(payload, cfg, store)
+            events += stop_events
+            message = "\n".join(m for m in (message, receipt) if m) or None
     if events:
         store.add_events(events)
     if ev in ("PostToolUse", "PostToolUseFailure"):
@@ -226,6 +233,8 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
 
 
 def main() -> int:
+    if os.environ.get("RATION_RUN_ID"):
+        return 0  # inside a `ration run` child session: the orchestrator observes the stream
     try:
         raw = sys.stdin.buffer.read()
         payload = json.loads(raw.decode("utf-8", "replace") or "{}")

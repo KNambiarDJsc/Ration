@@ -58,12 +58,12 @@ def record(payload: dict[str, Any], store: Store) -> list[UsageSnapshot]:
     written = []
     for s in snaps:
         prev = latest.get((s.provider, s.window))
-        if (
-            prev is not None
-            and abs(prev.used_percent - s.used_percent) < 0.01
-            and prev.reset_at == s.reset_at
-            and s.captured_at - prev.captured_at < MIN_WRITE_INTERVAL_S
-        ):
+        same_window = prev is not None and prev.reset_at == s.reset_at
+        if same_window and abs(prev.used_percent - s.used_percent) < 0.01 and s.captured_at - prev.captured_at < MIN_WRITE_INTERVAL_S:
+            continue
+        if same_window and s.used_percent < prev.used_percent - 0.5:
+            # These windows have a fixed reset time, so usage can't go down within one.
+            # A lower reading for the same reset is a stale value from another session.
             continue
         store.add_usage(s)
         written.append(s)

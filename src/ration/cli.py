@@ -152,6 +152,8 @@ def session_rows(store: Store, cfg: dict[str, Any], since_min: float) -> list[di
     rows = []
     budgets = provider_budgets(store, cfg)
     for s in store.active_sessions(time.time() - since_min * 60):
+        if s["provider"] == "ration":
+            continue  # pre-run baseline checks, not an agent session
         evs = store.events(session_id=s["session_id"], limit=400)
         st = detect(evs, now=time.time())
         pr = progress_mod.compute(evs, now=time.time())
@@ -261,8 +263,20 @@ def cmd_run(args: argparse.Namespace, dry_run: bool = False) -> int:
             counts[str(data.event_type)] = counts.get(str(data.event_type), 0) + 1
         elif kind == "stuck":
             console.print(f"  [red]likely stuck[/] ({data.score:.2f}): {'; '.join(data.reasons)}")
+        elif kind == "baseline":
+            p = sum(int(e.metadata.get("passed") or 0) for e in data)
+            f = sum(int(e.metadata.get("failed") or 0) for e in data)
+            ok = all(e.metadata.get("ok") for e in data)
+            summary = f"{p} passed, {f} failed" if p + f else ("passing" if ok else "failing")
+            console.print(f"\n[bold]Baseline[/]  checks before any spend: {summary}")
+        elif kind == "blocked":
+            console.print(f"  [red]blocked[/]: {data or 'the agent was not allowed to use a tool'}")
+            console.print(
+                "  Retrying won't help. Allow the action (e.g. --permission-mode acceptEdits) or run outside a protected path such as ~/.claude.",
+                style="dim",
+            )
         elif kind == "attempt":
-            style = "green" if data.outcome == "succeeded" else "yellow"
+            style = "green" if data.outcome == "succeeded" else "red" if data.outcome == "blocked" else "yellow"
             checks = f"checks {data.checks_passed}/{data.checks_total}" if data.checks_total else "no checks (unverified)"
             cost = f"   ${data.cost_usd:.3f}" if data.cost_usd is not None else ""
             console.print(f"  attempt → [{style}]{data.outcome}[/]   {checks}   progress {data.progress:.2f}   stuck {data.stuck:.2f}{cost}")
@@ -285,8 +299,13 @@ def cmd_run(args: argparse.Namespace, dry_run: bool = False) -> int:
     if dry_run or args.dry_run:
         console.print("\n(plan only, nothing was run)", style="dim")
         return 0
+    if report.stopped_reason == ["checks_already_pass"]:
+        console.print("\n[green]Checks already pass: nothing to do, nothing spent.[/]")
+        return 0
     status = "[green]completed[/]" if report.completed else "[yellow]not completed[/]"
-    console.print(f"\n{status} after {len(report.attempts)} attempt(s) in {report.wall_time_s:.0f}s")
+    costs = [a.cost_usd for a in report.attempts if a.cost_usd is not None]
+    spent = f", ${sum(costs):.3f} API-equivalent" if costs else ""
+    console.print(f"\n{status} after {len(report.attempts)} attempt(s) in {report.wall_time_s:.0f}s{spent}")
     if report.stopped_reason:
         console.print(f"stopped: {', '.join(report.stopped_reason)}", style="dim")
     return 0 if report.completed else 1

@@ -211,3 +211,53 @@ def test_effort_only_tip_when_model_is_right(store, cfg, tmp_path):
         {"session_id": "s1", "transcript_path": str(p), "prompt": "find out why the websocket reconnect occasionally deadlocks"}, cfg, store
     )
     assert msg and "`/effort high` (you're on low)" in msg
+
+
+# ---- regressions found by running RATION for real (2026-10-10) -----------------------
+REAL_RATE_LIMIT_EVENT = {
+    "type": "rate_limit_event",
+    "rate_limit_info": {
+        "status": "allowed", "resetsAt": 1791630600, "rateLimitType": "five_hour", "overageStatus": "rejected",
+        "isUsingOverage": False,
+        "unifiedWindows": {"five_hour": {"utilization": 0.2, "resetsAt": 1791630600}, "seven_day": {"utilization": 0.12, "resetsAt": 1792137600}},
+    },
+    "session_id": "74abfcee",
+}
+
+
+def test_stream_rate_limit_event_becomes_official_usage():
+    from ration.providers.claude import StreamParser
+
+    p = StreamParser("run1", None)
+    p.feed(REAL_RATE_LIMIT_EVENT)
+    snaps = {s.window: s for s in p.usage}
+    assert snaps["five_hour"].used_percent == 20.0 and snaps["seven_day"].used_percent == 12.0
+    assert snaps["five_hour"].reset_at == 1791630600 and str(snaps["five_hour"].source) == "provider_cli"
+
+
+def test_first_prompt_of_new_session_counts_tokens_from_byte_zero(store, cfg, tmp_path):
+    tpath = tmp_path / "new-session.jsonl"  # does not exist yet at the first prompt
+    hook.handle({"hook_event_name": "UserPromptSubmit", "session_id": "n1", "transcript_path": str(tpath), "prompt": "go"}, cfg, store)
+    assert store.last_event("n1", EventType.PROMPT_SUBMITTED).metadata["transcript_offset"] == 0
+    write_lines(tpath, [assistant("a1", "claude-haiku-5-5", U, time.time())], "w")
+    hook.handle({"hook_event_name": "Stop", "session_id": "n1", "transcript_path": str(tpath)}, cfg, store)
+    assert store.last_event("n1", EventType.TURN_SUMMARY).metadata["wtok"] == round(W)
+
+
+def test_model_tip_deferred_until_first_reply_reveals_model(store, cfg, tmp_path):
+    tpath = tmp_path / "s.jsonl"
+    prompt = "Investigate why test_median_even and test_percentile_p90 fail in this repo and explain the root cause"
+    out = hook.handle({"hook_event_name": "UserPromptSubmit", "session_id": "d1", "transcript_path": str(tpath), "prompt": prompt}, cfg, store)
+    assert out is None  # model unknown: nothing to compare against yet
+    write_lines(tpath, [assistant("a1", "claude-haiku-5-5", U, time.time(), effort="low")], "w")
+    tool = {"hook_event_name": "PostToolUse", "session_id": "d1", "transcript_path": str(tpath), "tool_name": "Read", "tool_input": {"file_path": "stats.py"}, "tool_response": {}}
+    out = hook.handle(tool, cfg, store)
+    assert out and "`/model sonnet`" in out["systemMessage"]
+    assert hook.handle(tool, cfg, store) is None  # delivered once
+
+
+def test_stale_lower_reading_for_same_window_is_ignored(store):
+    reset = time.time() + 3 * H
+    statusline.record({"rate_limits": {"seven_day": {"used_percentage": 10, "resets_at": reset}}}, store)
+    statusline.record({"rate_limits": {"seven_day": {"used_percentage": 1, "resets_at": reset}}}, store)
+    assert store.latest_usage("claude")[0].used_percent == 10

@@ -50,7 +50,7 @@ class RunReport:
 Hook = Callable[[str, Any], None]
 
 
-def run_checks(checks: list[str], cwd: str, session_id: str, run_id: str, task_id: str) -> tuple[int, list[AgentEvent], str]:
+def run_checks(checks: list[str], cwd: str, session_id: str, run_id: str, task_id: str, provider: str = "ration") -> tuple[int, list[AgentEvent], str]:
     passed = 0
     events: list[AgentEvent] = []
     tail = ""
@@ -63,11 +63,20 @@ def run_checks(checks: list[str], cwd: str, session_id: str, run_id: str, task_i
             out, ok = str(e), False
         meta = parse_test_output(out)
         meta.update({"ok": ok, "check": True})
-        events.append(AgentEvent("ration", session_id, EventType.TEST_RESULT, meta, run_id=run_id, task_id=task_id))
+        events.append(AgentEvent(provider, session_id, EventType.TEST_RESULT, meta, run_id=run_id, task_id=task_id))
         passed += int(ok)
         if not ok:
             tail = "\n".join(out.strip().splitlines()[-25:])
     return passed, events, tail
+
+
+def check_score(events: list[AgentEvent], passed: int, total: int) -> float:
+    """Verified progress in 0..1: test pass ratio when counts are known, else checks passed."""
+    p = sum(int(e.metadata.get("passed") or 0) for e in events)
+    f = sum(int(e.metadata.get("failed") or 0) for e in events)
+    if p + f:
+        return p / (p + f)
+    return passed / total if total else 0.0
 
 
 def build_prompt(task: AgentTask, history: list[tuple[AttemptReport, str, list[str]]]) -> str:
@@ -113,6 +122,22 @@ def execute(
     ]
     attempts: list[Attempt] = []
     history: list[tuple[AttemptReport, str, list[str]]] = []
+
+    # Baseline: run the acceptance checks once before spending anything. If they
+    # already pass there is nothing to do; otherwise progress is measured against it.
+    last_score: float | None = None
+    if task.acceptance_checks and not dry_run:
+        b_passed, b_events, _ = run_checks(task.acceptance_checks, cwd, "baseline", "baseline", task.id)
+        store.add_events(b_events)
+        last_score = check_score(b_events, b_passed, len(task.acceptance_checks))
+        on("baseline", b_events)
+        if b_passed == len(task.acceptance_checks):
+            report.completed = True
+            report.stopped_reason = ["checks_already_pass"]
+            store.record_outcome(task.id, True, b_passed, b_passed, 0, time.time() - t0, 0.0)
+            store.set_task_status(task.id, "done")
+            report.wall_time_s = time.time() - t0
+            return report
 
     while True:
         if "codex" in providers and hasattr(providers["codex"], "ingest_usage"):
@@ -172,21 +197,31 @@ def execute(
         prompt = build_prompt(task, history)
         result = provider.run(prompt, policy=policy, cwd=cwd, run_id=run_id, task_id=task.id, on_event=on_event, permission_mode=permission_mode)  # type: ignore[call-arg]
 
+        for snap in result.usage:  # official quota readings seen during the run
+            store.add_usage(snap)
         sid = result.session_id or run_id
+        verified_velocity = 0.0
         if task.acceptance_checks:
-            passed, check_events, tail = run_checks(task.acceptance_checks, cwd, sid, run_id, task.id)
+            passed, check_events, tail = run_checks(task.acceptance_checks, cwd, sid, run_id, task.id, provider=policy.provider)
             for e in check_events:
                 on_event(e)
             total = len(task.acceptance_checks)
             verified = passed == total
+            score = check_score(check_events, passed, total)
+            # "Progress" means the checks got better, not that the agent was busy.
+            verified_velocity = score - last_score if last_score is not None else 0.0
+            last_score = score
         else:
             passed, total, tail, verified = 0, 0, "", result.ok
 
         res = detect(run_events)
         prog = progress_mod.compute(run_events)
         store.add_progress(sid, run_id, prog.score, res.score, prog.reasons + res.reasons)
+        changed_files = any(e.event_type == EventType.FILE_CHANGED for e in run_events)
         if verified:
             outcome = "succeeded"
+        elif result.permission_denials and not changed_files:
+            outcome = "blocked"  # the agent wasn't allowed to act; retrying won't help
         elif stuck_flagged["v"] or res.band in ("intervene", "likely_stuck"):
             outcome = "stuck"
         elif result.error and not result.cancelled and not run_events:
@@ -199,10 +234,15 @@ def execute(
         rep = AttemptReport(policy, outcome, res.score, prog.score, passed, total, result.cost_usd, result.error)
         report.attempts.append(rep)
         on("attempt", rep)
-        attempts.append(Attempt(policy.provider, policy.model_class, outcome, res.score, prog.velocity))
+        attempts.append(Attempt(policy.provider, policy.model_class, outcome, res.score, verified_velocity))
         history.append((rep, tail, res.reasons))
         if outcome == "succeeded":
             report.completed = True
+            break
+        if outcome == "blocked":
+            kinds = sorted(set(result.permission_denials))
+            report.stopped_reason = [f"permission_denied:{','.join(kinds)}"]
+            on("blocked", result.denial_reason)
             break
         if outcome == "error" and result.error:
             # Provider failed to even start (auth, missing binary...): don't retry blindly.

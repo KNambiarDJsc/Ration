@@ -168,6 +168,22 @@ Read this honestly:
 - Part of D's efficiency comes from one assumption: stuck attempts cost 2× without interruption and 0.6× with it. D− isolates that assumption.
 - **This is not evidence about real agents.** Real-task benchmarks (SWE-bench-style) are on the roadmap; until then, treat these numbers as a behaviour check of the policy.
 
+### Real-world check (2026-10-10, Claude Code 2.1.296, Windows)
+
+Not a benchmark, just one real end-to-end run on a small repo with 2 failing tests:
+
+```text
+$ ration run "fix the failing median and percentile tests in stats.py" --check "python -m pytest -q" --permission-mode acceptEdits
+Baseline  checks before any spend: 4 passed, 2 failed
+Decision  Claude Code · cheap model · effort low · max turns 21 · retries 1 · subagents 1 · CHEAP_FIRST
+  reasons: ["routine_task_cheap_first", "all_budgets_tight_fewer_retries", "route_claude",
+            "claude_burn_pressure_high", "claude_budget_conservative", "reset_within_3_hours"]
+  attempt → succeeded   checks 1/1   progress 0.76   stuck 0.00   $0.010
+completed after 1 attempt(s) in 40s, $0.010 API-equivalent
+```
+
+The 5-hour window was under real pressure (2.16×, projected to run out 1h48m before reset), so RATION chose haiku at low effort, and that was enough. In the same session the advisor surfaced, in Claude Code itself: *"at this pace you'll hit your 5-hour limit in ~1h19m"* and *"this looks bigger than a quick edit: `/model sonnet` and `/effort high` will likely save retries."* Running for real also found and fixed bugs the tests hadn't: retries wasted on a permission wall (now stops with the reason), activity mistaken for progress (now measured against a pre-run baseline of your checks), and RATION's own hooks double-counting inside `ration run` child sessions.
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) and [docs/provider-capabilities.md](docs/provider-capabilities.md).

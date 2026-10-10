@@ -375,11 +375,13 @@ def on_prompt(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: flo
     prompt = payload.get("prompt") or ""
     mark = usage_mark(store, sid, now)
     events = reconcile(store, sid, mark, now)
-    meta: dict[str, Any] = {"usage_mark": mark, "repo": repo, "transcript_offset": transcript.size(tpath)}
+    # A brand-new session's transcript doesn't exist yet at its first prompt: start at 0.
+    offset = (transcript.size(tpath) or 0) if tpath else None
+    meta: dict[str, Any] = {"usage_mark": mark, "repo": repo, "transcript_offset": offset}
     a = assess(prompt) if is_task_like(prompt) else None
     if a:
         a = contextualize(a, store, sid, repo, now)
-        meta.update(task_type=str(a.task_type), difficulty=a.difficulty, confidence=a.confidence)
+        meta.update(task_type=str(a.task_type), difficulty=a.difficulty, confidence=a.confidence, risk=a.risk, hints=_hardness(a))
     if not adv["enabled"]:
         return events, meta, None
 
@@ -394,6 +396,8 @@ def on_prompt(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: flo
         tips.append(t)
     if adv["model_suggestions"] and a:
         model, effort = current_model(store, sid, tpath)
+        if model is None:
+            meta["model_tip_pending"] = True  # first prompt, model not known yet: decide on first reply
         t = model_tip(a, model, cfg, budgets.get(PROVIDER), effort)
         if t:
             tips.append(t)
@@ -407,6 +411,41 @@ def on_prompt(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: flo
         shown.append(msg)
         events.append(AgentEvent(PROVIDER, sid, EventType.ADVICE, {"kind": kind}, timestamp=now))
     return events, meta, ("RATION: " + "\nRATION: ".join(shown)) if shown else None
+
+
+def deferred_model_tip(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: float | None = None) -> tuple[list[AgentEvent], str | None]:
+    """If the model was unknown at prompt time (new session, no status line), give the
+    model tip as soon as the transcript reveals which model is answering."""
+    now = time.time() if now is None else now
+    adv = cfg["advisor"]
+    if not (adv["enabled"] and adv["model_suggestions"]):
+        return [], None
+    sid = str(payload.get("session_id") or "unknown")
+    p = store.last_event(sid, EventType.PROMPT_SUBMITTED)
+    if p is None or not p.metadata.get("model_tip_pending") or not p.metadata.get("task_type"):
+        return [], None
+    done = any(
+        e.event_type == EventType.ADVICE and str(e.metadata.get("kind", "")).startswith(("model:", "effort:", "deferred"))
+        for e in store.events(session_id=sid, since=p.timestamp, limit=2000)
+    )
+    if done:
+        return [], None
+    model, effort = current_model(store, sid, payload.get("transcript_path"))
+    if model is None:
+        return [], None
+    a = Assessment(
+        task_type=TaskType(p.metadata["task_type"]),
+        difficulty=float(p.metadata.get("difficulty") or 0.5),
+        risk=float(p.metadata.get("risk") or 0.3),
+        uncertainty=0.5,
+        reasons=[f"+ {h}" for h in p.metadata.get("hints") or []],
+        confidence=str(p.metadata.get("confidence") or "low"),
+    )
+    tip = model_tip(a, model, cfg, provider_budgets(store, cfg, now=now).get(PROVIDER), effort)
+    marker = AgentEvent(PROVIDER, sid, EventType.ADVICE, {"kind": tip[0] if tip else "deferred:none"}, timestamp=now)
+    if tip is None or store.recent_advice(tip[0], now - adv["quiet_minutes"] * 60, sid):
+        return [marker], None
+    return [marker], f"RATION: {tip[1]}"
 
 
 def _turn_tokens(store: Any, sid: str, prompt: AgentEvent, tpath: str | None) -> tuple[dict[str, float], int, float | None]:

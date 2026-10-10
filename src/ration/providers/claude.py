@@ -14,11 +14,21 @@ Never used: OAuth tokens, private usage endpoints, --dangerously-skip-permission
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
 
-from ..models import AgentEvent, EventType, ExecutionPolicy, ModelClass, UsageSnapshot
+from ..models import (
+    AgentEvent,
+    Confidence,
+    EventType,
+    ExecutionPolicy,
+    ModelClass,
+    ResourceType,
+    Source,
+    UsageSnapshot,
+)
 from ..normalize import tool_events
 from .base import (
     EventSink,
@@ -68,6 +78,34 @@ class ClaudeCapabilityDetector:
         return ProviderCapabilities("claude", True, version, features, notes)
 
 
+WINDOW_MINUTES = {"five_hour": 300, "seven_day": 7 * 24 * 60}
+
+
+def rate_limit_snapshots(info: dict[str, Any], now: float | None = None) -> list[UsageSnapshot]:
+    """`claude -p --output-format stream-json` emits `rate_limit_event` lines with
+    `rate_limit_info.unifiedWindows.{five_hour,seven_day}.{utilization 0..1, resetsAt}`."""
+    now = time.time() if now is None else now
+    out = []
+    for window, w in coerce(info.get("unifiedWindows")).items():
+        w = coerce(w)
+        if w.get("utilization") is None:
+            continue
+        out.append(
+            UsageSnapshot(
+                provider="claude",
+                window=window,
+                resource_type=ResourceType.USAGE_PERCENT,
+                used_percent=round(float(w["utilization"]) * 100, 2),
+                reset_at=float(w["resetsAt"]) if w.get("resetsAt") else None,
+                window_minutes=WINDOW_MINUTES.get(window),
+                source=Source.PROVIDER_CLI,
+                confidence=Confidence.HIGH,
+                captured_at=now,
+            )
+        )
+    return out
+
+
 class StreamParser:
     """Map `claude -p --output-format stream-json` lines to AgentEvents."""
 
@@ -77,6 +115,10 @@ class StreamParser:
         self.pending: dict[str, tuple[str, dict[str, Any]]] = {}
         self.result: dict[str, Any] | None = None
         self.final_text = ""
+        self.usage: list[UsageSnapshot] = []  # official quota readings seen in the stream
+        self.permission_denials: list[str] = []  # decision_reason_type per denied tool call
+        self.denied_ids: set[str] = set()
+        self.denial_reason = ""  # in memory only, shown to the user, never stored
 
     def _ev(self, et: EventType, meta: dict[str, Any] | None = None) -> AgentEvent:
         return AgentEvent("claude", self.session_id, et, meta or {}, run_id=self.run_id, task_id=self.task_id)
@@ -103,6 +145,8 @@ class StreamParser:
             for block in coerce(obj.get("message")).get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     name, ti = self.pending.pop(block.get("tool_use_id", ""), ("?", {}))
+                    if block.get("tool_use_id") in self.denied_ids:
+                        continue  # never ran: already recorded as a permission denial, not a failure
                     out += tool_events(
                         provider="claude",
                         session_id=self.session_id,
@@ -114,6 +158,13 @@ class StreamParser:
                         run_id=self.run_id,
                         task_id=self.task_id,
                     )
+        elif t == "rate_limit_event":
+            self.usage += rate_limit_snapshots(coerce(obj.get("rate_limit_info")))
+        elif t == "system" and obj.get("subtype") == "permission_denied":
+            self.permission_denials.append(str(obj.get("decision_reason_type") or "denied"))
+            self.denied_ids.add(str(obj.get("tool_use_id")))
+            self.denial_reason = str(obj.get("decision_reason") or obj.get("message") or "")[:300]
+            out.append(self._ev(EventType.PERMISSION_REQUESTED, {"tool": obj.get("tool_name"), "denied": True, "reason_type": obj.get("decision_reason_type")}))
         elif t == "result":
             self.result = obj
             if obj.get("result"):
@@ -192,8 +243,13 @@ class ClaudeProvider:
             return keep
 
         t0 = time.time()
-        rc, cancelled, err = stream_lines(self.build_argv(prompt, policy, permission_mode), cwd, on_line)
+        # RATION_RUN_ID tells RATION's own hooks inside this child session to stay out:
+        # the orchestrator already sees everything through the stream.
+        env = dict(os.environ, RATION_RUN_ID=run_id)
+        rc, cancelled, err = stream_lines(self.build_argv(prompt, policy, permission_mode), cwd, on_line, env=env)
         r = parser.result or {}
+        if not parser.permission_denials and r.get("permission_denials"):
+            parser.permission_denials = ["denied"] * len(r["permission_denials"])
         usage = coerce(r.get("usage"))
         return RunResult(
             ok=(rc == 0 and not r.get("is_error") and not cancelled),
@@ -205,4 +261,7 @@ class ClaudeProvider:
             error=None if rc == 0 else (err.strip()[-500:] or f"exit {rc} after {time.time() - t0:.0f}s"),
             cancelled=cancelled,
             final_text=parser.final_text,
+            usage=parser.usage,
+            permission_denials=parser.permission_denials,
+            denial_reason=parser.denial_reason,
         )

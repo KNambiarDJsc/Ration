@@ -49,6 +49,9 @@ class RunResult:
     error: str | None = None
     cancelled: bool = False
     final_text: str = ""  # kept in memory only, never stored
+    usage: list[UsageSnapshot] = field(default_factory=list)  # official quota readings from the run
+    permission_denials: list[str] = field(default_factory=list)  # e.g. ["safetyCheck"]
+    denial_reason: str = ""  # in memory only, never stored
 
 
 class AgentProvider(Protocol):
@@ -86,12 +89,19 @@ def run_text(argv: list[str], timeout: float = 20) -> str | None:
         return None
 
 
-def stream_lines(argv: list[str], cwd: str, on_line: Callable[[str], bool], stdin_text: str | None = None) -> tuple[int, bool, str]:
+def stream_lines(
+    argv: list[str],
+    cwd: str,
+    on_line: Callable[[str], bool],
+    stdin_text: str | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, bool, str]:
     """Run argv, feed each stdout line to on_line. Returns (rc, cancelled, stderr_tail)."""
     with tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(
             argv,
             cwd=cwd,
+            env=env,
             stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=err,
