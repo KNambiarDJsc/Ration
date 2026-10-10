@@ -20,6 +20,12 @@ classifiers = [
 ]
 dependencies = ["rich>=13.7"]
 
+[project.urls]
+Homepage = "https://github.com/KNambiarDJsc/Ration"
+Repository = "https://github.com/KNambiarDJsc/Ration"
+Issues = "https://github.com/KNambiarDJsc/Ration/issues"
+Changelog = "https://github.com/KNambiarDJsc/Ration/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
 

@@ -1,92 +1,123 @@
+<div align="center">
+
 # RATION
 
 **Spend intelligence where it matters.**
 
 The inference control plane for coding agents.
 
+[![CI](https://github.com/KNambiarDJsc/Ration/actions/workflows/ci.yml/badge.svg)](https://github.com/KNambiarDJsc/Ration/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![Local-first](https://img.shields.io/badge/data-100%25%20local-brightgreen)
+
+</div>
+
 > Your coding agents have a spending problem.
 
-Developers run Claude Code, Codex, subagents, skills, hooks and tools all day.
-RATION makes sure your best inference is spent on the work that actually deserves it.
+You run Claude Code (and Codex) all day: long sessions, subagents, retries, test loops. Then you hit your 5-hour limit mid-task with no warning, and you never learn which turn burned it.
 
-```text
-$ ration status
-RATION  Spend intelligence where it matters.
+RATION sits **above** your coding agents. It watches what they actually do, reads the official usage numbers they already report, and tells you **when to spend, save, escalate or stop**: in your Claude Code session, in your status line, and in a scheduler that can run tasks for you.
 
-Claude Code
-  five_hour  ███████████░░░░░░░  62% used   reset 1h 29m
-              burn pressure 0.70 LOW   confidence medium   source provider_cli
-  seven_day  █████████████░░░░░  71% used   reset 2d 07h
-              burn pressure 1.22 OK   confidence medium   source provider_cli
+<p align="center"><img src="docs/assets/watch.svg" alt="ration watch: one healthy session, one session looping on the same failing test, flagged likely_stuck with reasons" width="760"></p>
 
-Reserve      ████░░░░░░░░░░░░░░ 20%
-```
+## What you get
 
-## Why RATION?
-
-Not another token dashboard. RATION understands
-
-**TASK VALUE × TASK DIFFICULTY × PROGRESS × BUDGET × TIME TO RESET**
-
-and decides when to spend, save, escalate or stop.
+- **Warnings before you hit the wall.** *"At this pace you'll hit your 5-hour limit in ~40m (it resets in 2h00m)."* Measured from your real pace, in Claude Code and in your status line.
+- **The right model for the task you just typed.** *"This looks like a small edit: haiku should be enough (you're on opus). `/model haiku` and `/effort low` save premium quota."* It never switches anything for you.
+- **Receipts.** *"That turn used 7% of your 5-hour window (3 subagents, 41 tool calls)."* Exact token counts from your session files.
+- **Stuck detection.** Same test failing six times, the same commands in a loop, files re-read with no change: scored, explained, and (if you opt in) interrupted.
+- **A scheduler that starts cheap and escalates only on verified progress.** `ration run` checks your tests before spending anything, picks model/effort/retries from your real budget, and stops wasting quota on loops.
 
 Its objective is not "minimize tokens". It is **maximize verified useful engineering work per unit of scarce inference.**
 
-- **Reset-aware budgets.** 70% of your weekly quota left with a day to go is waste waiting to happen; 20% left with five days to go is a crunch. RATION computes `burn_pressure = observed_burn / (remaining / time_to_reset)` from the official numbers your agents already report.
-- **Stuck detection.** Same test failing six times, the same three commands in a loop, files re-read without changes: RATION scores it, explains it, and recommends (or, in guard mode, injects) an intervention.
-- **Subagent governance.** Twelve premium subagents for a task that needs three? Observe mode tells you; guard mode denies the spawn with a reason the agent can act on.
-- **Progressive escalation.** `ration run` starts cheap when that is likely enough, escalates only when there's no progress, and reserves premium models for high-value work with budget headroom.
+## Quickstart
 
-## In your Claude Code session (zero extra terminals)
+Requires Python 3.11+ and [Claude Code](https://code.claude.com). Not on PyPI yet; install from GitHub:
 
-After `ration init`, keep working as usual. RATION speaks up only when it matters, and only to you (tips use the hook `systemMessage` channel and never enter the model's context):
+```bash
+uv tool install git+https://github.com/KNambiarDJsc/Ration
+# or: pipx install git+https://github.com/KNambiarDJsc/Ration
+
+ration init      # detects Claude Code / Codex, asks before changing anything, backs up settings
+```
+
+Then start a **new** `claude` session and work as usual. RATION observes, and speaks up only when it matters.
+
+```bash
+ration status    # 5-hour / weekly usage, burn pressure, reset forecast
+ration watch     # live progress + stuck detection for running sessions
+ration doctor    # check hooks, status line, latency
+```
+
+<p align="center"><img src="docs/assets/status.svg" alt="ration status: 5-hour window 58% used with burn pressure 3.44 HIGH and a projection to run out 2h24m before reset" width="760"></p>
+
+## In your Claude Code session
+
+After `ration init` you don't need another terminal. Tips appear as Claude Code notices, are shown **only to you**, and **never enter the model's context** (they use the hook `systemMessage` channel):
 
 ```text
 > fix the typo in the README quickstart section please
   RATION: this looks like a small edit: haiku should be enough (you're on claude-opus-5-5).
-          `/model haiku` saves premium quota.
+          `/model haiku` and `/effort low` save premium quota.
 
 > find out why the websocket reconnect logic occasionally deadlocks
   RATION: this looks like hard debugging (race condition, deadlock): consider `/model opus`
           with high effort. A stronger first attempt is usually cheaper than several weak ones.
 
   RATION: at this pace you'll hit your 5-hour limit in ~40m (it resets in 2h00m).
-  RATION: that turn used ~7% of your 5-hour window (3 subagents, 41 tool calls).
+  RATION: that turn used 7% of your 5-hour window (3 subagents, 41 tool calls).
   RATION: your weekly window still has 55% left and resets in 9h. Unused quota is lost at reset.
 
 status line:  RATION · 5h 72% (reset 1h59m)  ⚠ 5h limit in ~40m
 ```
 
-- **Model + effort suggestion** when you submit a task-like prompt, compared with the model and effort you're actually on (`/model …`, `/effort …`). It never switches anything for you, and holds back premium suggestions when your window is under pressure.
-- **Limit warnings before you hit the wall**, from your real pace (5-hour pace over the last ~30 min; weekly pace over ~17 h, so a burst of work doesn't cry wolf).
-- **Turn receipts**: what a heavy turn cost, in % of your 5-hour window (subscriptions), dollars (API keys) or tokens.
-- **Stuck-session tip** when you keep prompting an agent that's looping.
-- Each tip kind is rate-limited. `ration advisor off` silences all of it; thresholds live under `[advisor]` in `config.toml`.
+Each kind of tip is rate-limited, and model tips are withheld when RATION isn't confident about the task. `ration advisor off` silences all of it.
 
-### How the advisor stays accurate (all local: no APIs, no LLM calls)
+**How it stays accurate, with local data only (no APIs, no LLM calls):**
 
 | Concern | How it's handled |
 |---|---|
-| Keyword guesses misread prompts | Every classification has a confidence; model tips are **withheld when it's a guess**. The guess is corrected by the session (failing tests → debugging) and by **your own history in this repo** ("debugging turns here usually take ~45 tool calls"), learned from RATION's turn summaries. |
-| Needs the status line / a Pro-Max plan | Model and effort are read from the session transcript, so tips work with hooks alone. API-key users set `daily_usd` / `weekly_usd` in `[budget]`; spend comes from Claude Code's own `cost.total_cost_usd`, and pace alerts, `status` and the scheduler use it like a quota window. |
-| Usage % arrives late, receipts could be off | Each turn's tokens are counted **exactly** from the transcript (de-duplicated, subagents included from their own transcripts). The % is exact when a fresh reading exists; otherwise it's estimated from a usage-per-token rate **learned on your machine** (each turn's exact mark-to-mark delta at the next prompt, skipped when another session shared the window) and labelled `~… calibrated on this machine`. |
-| How to change effort | Detected live (`effort.level` from the status line, `effort` in the transcript) and suggested as `/effort low|medium|high`. |
+| Keyword guesses misread prompts | Every classification has a confidence, and model tips are **withheld when it's a guess**. The guess is corrected by the session (failing tests → debugging) and by **your own history in this repo** ("debugging turns here usually take ~45 tool calls"). |
+| Needs a status line or a Pro/Max plan | Model and effort are read from the session transcript, so tips work with hooks alone. API-key users set `daily_usd` / `weekly_usd`; spend comes from Claude Code's own `cost.total_cost_usd`. |
+| Usage % arrives late | Each turn's tokens are counted **exactly** from the transcript (de-duplicated, subagents included). The % is exact when a fresh reading exists, otherwise estimated from a usage-per-token rate **learned on your machine** and labelled `~… calibrated on this machine`. |
+| Effort | Detected live (`effort.level`, transcript `effort`) and suggested as `/effort low|medium|high`. |
 
-## Quickstart
-
-```bash
-pipx install ration      # or: uv tool install ration
-ration init              # detects Claude Code / Codex, asks before changing anything
-ration status            # budgets, burn pressure, reset forecast
-ration watch             # live progress + stuck detection for running sessions
-```
-
-Keep using `claude` and `codex` exactly as before. RATION observes.
+## Let RATION run a task
 
 ```bash
-ration plan "find and fix why auth refresh occasionally deadlocks" --priority high
-ration run  "fix the flaky checkout test" --check "pytest -q tests/test_checkout.py"
+ration plan "find and fix why auth refresh occasionally deadlocks" --priority high   # explain, don't run
+ration run  "fix the flaky checkout test" --check "pytest -q tests/test_checkout.py" --permission-mode acceptEdits
 ```
+
+<p align="center"><img src="docs/assets/run.svg" alt="ration run: baseline 4 passed 2 failed; cheap model chosen because the budget was tight; succeeded in 1 attempt for $0.010" width="760"></p>
+
+That's a real run (2026-10-10, Claude Code 2.1.296). The 5-hour window was under pressure, so RATION chose haiku at low effort, and that was enough.
+
+What `ration run` does:
+
+1. Runs your `--check` commands **before spending anything**. Already passing? Done, nothing spent.
+2. Picks provider, model class, effort, max turns, retries and subagent allowance from task difficulty/risk/value and your **real** budget, and records every reason.
+3. Runs the agent (`claude -p --output-format stream-json`, or `codex exec --json`), watching for stuck loops; a likely-stuck run is interrupted.
+4. Verifies with your checks. No improvement → escalate one tier (cheap → strong → premium, premium only when justified). Progress → keep the model. Permission wall → stop and tell you why instead of retrying.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `ration init` | Detect agents, install hooks + status line (asks first, backs up settings) |
+| `ration status` | Usage per window, burn pressure, reset forecast, recommendation |
+| `ration watch` | Live view of sessions: progress, stuck score, reasons, suggestion |
+| `ration plan "<task>"` | Show the scheduler's decision and reasons without running |
+| `ration run "<task>" --check "<cmd>"` | Run a task with budget-aware model choice, verification and escalation |
+| `ration sessions` / `ration history` | Discovered sessions / tasks run through RATION |
+| `ration providers` / `ration doctor` | Detected capabilities / installation health and hook latency |
+| `ration privacy [--purge]` | Exactly what's stored locally; delete it all |
+| `ration benchmark` | Reproducible routing simulation (A/B/C/D policies under equal budgets) |
+| `ration advisor on\|off` | In-session tips |
+| `ration guard on\|off` | Enforcement (default is observe-only) |
+| `ration hooks install\|uninstall\|status`, `ration statusline install\|uninstall` | Manage the Claude Code integration |
+| `ration snippet` | Print an optional AGENTS.md / CLAUDE.md fragment (never written for you) |
 
 ## How it works
 
@@ -99,131 +130,134 @@ ration run  "fix the flaky checkout test" --check "pytest -q tests/test_checkout
                Provider Adapters
       ┌───────────────┼────────────────┐
  Claude Code        Codex          Generic CLI / Mock
- hooks + statusline rollout logs   exit codes
+ hooks, status line rollout logs   exit codes
  claude -p stream   codex exec --json
 ```
 
-Three modes:
-
 | Mode | What it does | How |
 |---|---|---|
-| **Observe** (default) | records sessions, tool calls, tests, subagents, usage; recommends | Claude Code command hooks + statusline; Codex rollout logs |
-| **Guard** (`ration guard on`) | denies wasteful subagent spawns, injects stuck warnings | `PreToolUse` deny on the Agent tool; `additionalContext` after tool calls |
-| **Schedule** (`ration run`) | picks provider, model class, effort, turns, retries, subagent allowance; escalates; verifies with your checks | `claude -p --output-format stream-json`, `codex exec --json` |
+| **Observe** (default) | Records sessions, tool calls, tests, subagents, usage; advises | Claude Code command hooks + status line; Codex rollout logs |
+| **Guard** (`ration guard on`) | Denies wasteful subagent spawns, injects stuck warnings | `PreToolUse` deny on the Agent tool; `additionalContext` after tool calls |
+| **Schedule** (`ration run`) | Chooses and runs, verifies, escalates or stops | `claude -p --output-format stream-json`, `codex exec --json` |
 
-## Claude Code integration
+**Reset-aware budgeting.** `burn_pressure = observed_burn / (remaining / time_to_reset)`. Above 1 you'll run out before the reset; below 1 quota will go unused. Pace is measured over ~10% of each window (30 min for the 5-hour window, ~17 h for the weekly one) so a burst of work doesn't cry wolf. Unused quota is only offered to queued useful work; RATION never burns quota for its own sake.
 
-- **Usage comes from the official status line JSON** (`rate_limits.five_hour` / `seven_day`, Pro/Max and gateway spend limits). `ration statusline install` wraps your existing status line and still prints it, so nothing you see changes.
-- **Hooks** (`ration hooks install`) are appended next to yours in `~/.claude/settings.json` (backed up first). Uninstall removes only RATION's entries.
-- Hooks are deterministic Python (no LLM calls), fail open (an internal error never blocks your session), and take ~80–150 ms per tool call on a Windows laptop (`ration doctor` measures yours).
-- RATION never edits `CLAUDE.md`, permissions, auth or sandbox settings, and never uses OAuth tokens or private endpoints.
+**Stuck detection.** Nine signals (repeated identical tool calls, repeated command sequences, the same failing test, failed-tool streaks, edit churn, unchanged re-reads, time without progress, compaction without progress, repeated delegation) combined with a noisy-OR into `stuck ∈ [0, 1]`:
 
-## Codex integration
-
-- Usage comes from Codex's own rollout logs (`$CODEX_HOME/sessions/**/rollout-*.jsonl`), which record server-reported `rate_limits` (primary/secondary windows). Read-only.
-- `ration run --provider codex` uses `codex exec --json`. RATION passes no sandbox or approval flags; your Codex config always wins.
-- `ration snippet` prints an optional AGENTS.md fragment. RATION never writes AGENTS.md for you.
-
-## Privacy
-
-All data stays local in SQLite (`~/.config/ration/ration.db`). There is no upload code path; telemetry is off.
-`ration privacy` shows exactly what is stored. Stored: event types, tool names, *hashes* of tool inputs, test pass/fail counts, token/cost numbers, usage percentages, file paths (optional). Never stored: source code, diffs, prompts (only their length), full commands, tool output, credentials. `ration privacy --purge` deletes everything.
-
-## Scheduler
-
-Rule-based and explainable (V1 has no RL and no learned routing). Every decision carries its reasons:
-
-```text
-Decision  Claude Code · strong model · effort high · max turns 36 · retries 3 · subagents 4 · STRONG_FIRST
-  reasons: ["high_priority_task", "hard_debugging", "route_claude", "claude_budget_unknown"]
-```
-
-Policies: `CHEAP_FIRST` (routine work), `STRONG_FIRST` (high-risk or hard debugging/architecture/migration), `PREMIUM_RESERVED` (premium only when value is high, a cheaper attempt failed or it's urgent, and the budget is above reserve or would otherwise go unused).
-
-## Stuck detection
-
-Nine signals (repeated identical tool calls, repeated command sequences, the same failing test, failed-tool streaks, edit churn, unchanged re-reads, time without progress, compaction without progress, repeated delegation) are combined with a noisy-OR into `stuck ∈ [0,1]`:
-
-| stuck | band | default action |
+| stuck | band | default suggestion |
 |---|---|---|
 | < 0.35 | healthy | continue |
 | 0.35–0.65 | watch | continue, show reasons |
-| 0.65–0.80 | intervene | REPLAN / COMPACT_CONTEXT / RESTART_SESSION / REDUCE_PARALLELISM |
-| > 0.80 | likely stuck | ESCALATE_MODEL (valuable + budget) · STOP (low value) · ASK_USER |
+| 0.65–0.80 | intervene | replan / compact context / restart session / reduce parallelism |
+| > 0.80 | likely stuck | escalate (valuable + budget) · stop (low value) · ask you |
+
+**Scheduler.** Rule-based and explainable: `CHEAP_FIRST` for routine work, `STRONG_FIRST` for risky or hard debugging/architecture/migration, `PREMIUM_RESERVED` gating premium models. No RL, no learned routing in v0.1. Every decision is logged as state/action/outcome for later research.
+
+## Integrations
+
+**Claude Code**
+- Usage comes from official sources: the status line JSON (`rate_limits.five_hour` / `seven_day`, Pro/Max and gateway spend limits) and the `rate_limit_event` in `claude -p` stream output.
+- Hooks are appended next to yours in `~/.claude/settings.json` (backed up first); uninstall removes only RATION's entries. Your existing status line keeps working (RATION wraps and prints it).
+- Hooks are deterministic Python, **fail open** (an internal error never blocks your session), and add roughly 100–200 ms per tool call (`ration doctor` measures yours).
+- RATION never edits `CLAUDE.md`, permissions, auth or sandbox settings, never passes `bypassPermissions`, and never uses OAuth tokens or private endpoints.
+
+**Codex**
+- Usage from Codex's own rollout logs (`$CODEX_HOME/sessions/**/rollout-*.jsonl`, server-reported `rate_limits`), read-only.
+- `ration run --provider codex` uses `codex exec --json`. RATION passes no sandbox or approval flags; your Codex config wins.
+
+## Privacy and safety
+
+- **All data stays on your machine** in SQLite (`~/.config/ration/ration.db`). There is no upload code path and no telemetry.
+- **Stored:** event types, tool names, *hashes* of tool inputs, test runner names and pass/fail counts, token/cost numbers, usage percentages, file paths (can be turned off). For prompts: only length, estimated task type/difficulty, and usage % at submit time.
+- **Never stored:** source code, diffs, prompt text, full commands, tool output, credentials.
+- `ration privacy` shows exactly what's stored; `ration privacy --purge` deletes it.
+
+## Configuration
+
+`~/.config/ration/config.toml` (created by `ration init`), with per-project overrides in `.ration.toml`:
+
+```toml
+[budget]
+reserve_percent = 20      # keep this much of a window for high-value work
+daily_usd = 0             # API-key users: daily / weekly dollar budgets (0 = off)
+weekly_usd = 0
+
+[advisor]
+enabled = true
+receipt_min_percent = 2.0 # only show receipts for turns that cost >= 2% of the 5-hour window
+quiet_minutes = 20        # don't repeat the same kind of tip within this window
+
+[guard]
+mode = "observe"          # "guard" lets hooks deny subagent explosions / inject stuck warnings
+max_subagents_per_task = 6
+max_premium_subagents = 2
+
+[claude]
+cheap = "haiku"           # what cheap / strong / premium mean for `ration run` and tips
+strong = "sonnet"
+premium = "opus"
+```
 
 ## Benchmarks
 
-`ration benchmark` runs a reproducible **synthetic** world (100 tasks, 3 providers, identical weekly budgets, 5 seeds). Its parameters live in [`src/ration/sim/bench.py`](src/ration/sim/bench.py).
+`ration benchmark` runs a reproducible **synthetic** world (100 tasks, 3 providers, identical weekly budgets, 5 seeds; parameters in [`src/ration/sim/bench.py`](src/ration/sim/bench.py)):
 
-| policy | resolved /100 | value | units / resolved | stuck units | premium units | wall h | unused at reset | ran out early |
-|---|---|---|---|---|---|---|---|---|
-| A premium always | 88.0 | 42.9 | 10.08 | 178 | 887 | 30.8 | 23% | 2h |
-| B cheapest always | 45.4 | 22.3 | 3.14 | 75 | 0 | 30.1 | 88% | 0h |
-| C static routing | 88.0 | 43.3 | 7.43 | 232 | 506 | 24.5 | 43% | 4h |
-| **D RATION adaptive** | 81.8 | 43.8 | **5.32** | 74 | 217 | 26.0 | 62% | 0h |
-| D− RATION, no stuck interrupt | 82.0 | 44.7 | 6.71 | 217 | 226 | 30.3 | 52% | 0h |
+| policy | resolved /100 | value | units / resolved | stuck units | premium units | unused at reset | ran out early |
+|---|---|---|---|---|---|---|---|
+| A premium always | 88.0 | 42.9 | 10.08 | 178 | 887 | 23% | 2h |
+| B cheapest always | 45.4 | 22.3 | 3.14 | 75 | 0 | 88% | 0h |
+| C static routing | 88.0 | 43.3 | 7.43 | 232 | 506 | 43% | 4h |
+| **D RATION adaptive** | 81.8 | 43.8 | **5.32** | 74 | 217 | 62% | 0h |
+| D− RATION, no stuck interrupt | 82.0 | 44.7 | 6.71 | 217 | 226 | 52% | 0h |
 
-Read this honestly:
-- In this world RATION delivers about the same task value as premium-always and static routing (differences between A, C, D and D− are within seed noise) at ~28% lower cost per resolved task than static routing and ~47% lower than premium-always, and it never runs a provider dry. It resolves *fewer* tasks than A/C because it deliberately stops low-value loops.
-- Part of D's efficiency comes from one assumption: stuck attempts cost 2× without interruption and 0.6× with it. D− isolates that assumption.
-- **This is not evidence about real agents.** Real-task benchmarks (SWE-bench-style) are on the roadmap; until then, treat these numbers as a behaviour check of the policy.
+Read honestly: in this world RATION delivers about the same task value (differences within seed noise) at ~28% lower cost per resolved task than static routing and ~47% lower than premium-always, and never runs a provider dry. It resolves fewer tasks because it deliberately stops low-value loops. Part of the saving comes from one assumption (stuck attempts cost 2× uninterrupted, 0.6× interrupted), which D− isolates. **This is not evidence about real agents**; a real-task benchmark is on the roadmap.
 
-### Real-world check (2026-10-10, Claude Code 2.1.296, Windows)
+## FAQ
 
-Not a benchmark, just one real end-to-end run on a small repo with 2 failing tests:
+**Does it slow Claude Code down?** Each tool call runs a ~100–200 ms local hook. `ration doctor` measures it on your machine.
 
-```text
-$ ration run "fix the failing median and percentile tests in stats.py" --check "python -m pytest -q" --permission-mode acceptEdits
-Baseline  checks before any spend: 4 passed, 2 failed
-Decision  Claude Code · cheap model · effort low · max turns 21 · retries 1 · subagents 1 · CHEAP_FIRST
-  reasons: ["routine_task_cheap_first", "all_budgets_tight_fewer_retries", "route_claude",
-            "claude_burn_pressure_high", "claude_budget_conservative", "reset_within_3_hours"]
-  attempt → succeeded   checks 1/1   progress 0.76   stuck 0.00   $0.010
-completed after 1 attempt(s) in 40s, $0.010 API-equivalent
+**Does it send my code or prompts anywhere?** No. There is no network code at all; everything is local SQLite, and prompt text is never stored.
+
+**Is this allowed with a Claude subscription?** RATION only reads what Claude Code itself exposes locally (hooks, status line, session files) and launches the official `claude` CLI. It never touches credentials, OAuth tokens or private endpoints.
+
+**I use an API key, not Pro/Max.** Set `daily_usd` / `weekly_usd` in `[budget]`; budgets, warnings and receipts then work in dollars.
+
+**It's too chatty / not chatty enough.** Tune `[advisor]`, or `ration advisor off`.
+
+## Uninstall
+
+```bash
+ration hooks uninstall        # removes only RATION's hooks
+ration statusline uninstall   # restores your previous status line
+uv tool uninstall ration      # or: pipx uninstall ration
 ```
 
-The 5-hour window was under real pressure (2.16×, projected to run out 1h48m before reset), so RATION chose haiku at low effort, and that was enough. In the same session the advisor surfaced, in Claude Code itself: *"at this pace you'll hit your 5-hour limit in ~1h19m"* and *"this looks bigger than a quick edit: `/model sonnet` and `/effort high` will likely save retries."* Running for real also found and fixed bugs the tests hadn't: retries wasted on a permission wall (now stops with the reason), activity mistaken for progress (now measured against a pre-run baseline of your checks), and RATION's own hooks double-counting inside `ration run` child sessions.
+Your data is in `~/.config/ration/` (delete it, or `ration privacy --purge` first).
 
-## Architecture
+## Project status
 
-See [docs/architecture.md](docs/architecture.md) and [docs/provider-capabilities.md](docs/provider-capabilities.md).
-
-```
-src/ration/
-  models.py        provider-neutral events, tasks, policies, usage snapshots
-  store.py         SQLite (WAL, versioned migrations)
-  budget.py        reset-aware budgeting
-  progress.py      explainable progress score + velocity
-  stuck.py         stuck score + interventions
-  difficulty.py    transparent task heuristics
-  scheduler.py     V1 rule-based scheduler
-  orchestrator.py  `ration run` loop: decide → run → verify → escalate/stop
-  normalize.py     tool calls → events (file reads/changes, test results)
-  hooks/           Claude Code hook + statusline entry points (stdlib-only, fast)
-  integrations/    settings.json installer (coexists with user hooks)
-  providers/       claude, codex, generic CLI, mock
-  sim/             benchmark harness
-```
+**Alpha (v0.1).** Built and tested on Windows with Claude Code 2.1.296, including live end-to-end runs; CI runs the test suite on Linux, macOS and Windows. Known gaps:
+- The **Codex adapter** follows the open-source `codex-rs` protocol and is unit-tested against its formats, but hasn't been run against a live Codex install yet.
+- Session transcripts are an internal Claude Code format: read defensively, verified on 2.1.296, may need updates as Claude Code evolves.
+- Task difficulty is keyword heuristics corrected by your own history; no ML.
 
 ## Roadmap
 
 - Real-task benchmark suite (controlled repos with acceptance checks; SWE-bench-style adapter)
-- Codex lifecycle hooks (Codex now loads `hooks.json`; wire guard mode once the event schema is stable)
-- Gemini CLI and OpenAI-compatible/local adapters
+- Codex lifecycle hooks and live Codex validation
+- Gemini CLI and OpenAI-compatible / local-model adapters
 - Optional MCP server (`ration_get_budget`, `ration_request_escalation`, …); the core never depends on it
-- Textual dashboard once the core loop is proven
+- A Textual dashboard once the core loop has proven itself
 - Learned allocation policies, trained on the state/action/outcome log RATION already records
 
 ## Research
 
-Every scheduler decision is logged as **state** (budgets, reset times, task features, attempts, stuck/progress), **action** (provider, model class, effort, parallelism, intervention) and **outcome** (completed, checks, cost, wall time). The open question: *can learned compute-allocation policies beat static routing under real quota constraints?* RATION is built to answer it with data, later.
+Every scheduler decision is logged as **state** (budgets, reset times, task features, attempts, stuck/progress), **action** (provider, model class, effort, parallelism, intervention) and **outcome** (completed, checks, cost, wall time). The open question: *can learned compute-allocation policies beat static routing under real quota constraints?* RATION is built to answer it with data.
 
-## Development
+## Contributing
 
-```bash
-uv venv && uv pip install -e ".[dev]"
-pytest
-ruff check src tests
-```
+Issues and PRs welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Architecture notes: [docs/architecture.md](docs/architecture.md), provider research: [docs/provider-capabilities.md](docs/provider-capabilities.md).
 
-License: MIT.
+## License
+
+[MIT](LICENSE)
