@@ -65,7 +65,7 @@ What the tokens were
   model output               ██░░░░░░░░░░░░░░░░░░░░░░░░░░   8%
 
 Biggest sessions
-   82%  my-agent-project       ad7865a4  249.7h · 1209 calls · peak context 962k
+   82%  my-agent-project       7f3a91c2  249.7h · 1209 calls · peak context 962k
 
 What to change  (biggest first)
   1. Long contexts: up to 57% of your usage was re-reading context above 120k
