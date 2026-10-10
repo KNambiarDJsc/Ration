@@ -60,7 +60,8 @@ def test_cli_run_with_mock_provider_and_checks(capsys, tmp_path):
 
 
 def test_cli_smoke(capsys):
-    assert cli.main(["plan", "fix", "the", "flaky", "login", "test"]) == 0
+    # mock provider: the outcome must not depend on whether `claude` is installed on this machine
+    assert cli.main(["plan", "fix", "the", "flaky", "login", "test", "--provider", "mock"]) == 0
     assert cli.main(["status"]) == 0
     assert cli.main(["privacy"]) == 0
     assert cli.main(["watch", "--once"]) == 0
