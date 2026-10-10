@@ -91,6 +91,70 @@ def _effort(v: Any) -> str | None:
     return None
 
 
+@dataclass
+class Call:
+    """One model API call (one de-duplicated assistant message)."""
+
+    ts: float
+    model: str
+    inp: int
+    out: int
+    cw: int  # cache write
+    cr: int  # cache read
+    cwd: str | None = None
+
+    @property
+    def ctx(self) -> int:
+        """Prompt size of this call."""
+        return self.inp + self.cw + self.cr
+
+    @property
+    def weighted(self) -> float:
+        return self.inp * WEIGHTS["input"] + self.out * WEIGHTS["output"] + self.cw * WEIGHTS["cache_write"] + self.cr * WEIGHTS["cache_read"]
+
+
+def iter_calls(path: str | os.PathLike[str]) -> list[Call]:
+    """Every call in a transcript, in order, de-duplicated. Content is never read."""
+    out: list[Call] = []
+    seen: set[tuple[Any, Any]] = set()
+    try:
+        with open(path, "rb") as f:
+            data = f.read(MAX_READ_BYTES)
+    except OSError:
+        return out
+    for raw in data.split(b"\n"):
+        if b'"assistant"' not in raw:
+            continue
+        try:
+            r = json.loads(raw)
+        except ValueError:
+            continue
+        m = r.get("message") if isinstance(r.get("message"), dict) else {}
+        u = m.get("usage")
+        model = m.get("model")
+        if r.get("type") != "assistant" or not isinstance(u, dict) or not model or model == "<synthetic>":
+            continue
+        key = (m.get("id"), r.get("requestId"))
+        if key in seen:
+            continue
+        seen.add(key)
+        ts = _ts(r.get("timestamp"))
+        if ts is None:
+            continue
+        out.append(
+            Call(
+                ts=ts,
+                model=model,
+                inp=int(u.get("input_tokens") or 0),
+                out=int(u.get("output_tokens") or 0),
+                cw=int(u.get("cache_creation_input_tokens") or 0),
+                cr=int(u.get("cache_read_input_tokens") or 0),
+                cwd=r.get("cwd") if isinstance(r.get("cwd"), str) else None,
+            )
+        )
+    return out
+
+
 def size(path: str | None) -> int | None:
     try:
         return os.path.getsize(path) if path else None

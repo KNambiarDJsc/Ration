@@ -43,6 +43,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "model_suggestions": True,
         "budget_alerts": True,
         "turn_receipts": True,
+        "resume_tip": True,  # say what resuming an expired-cache session will rebuild
         # Only show a per-turn receipt when a turn used at least this much.
         "receipt_min_percent": 2.0,  # of the 5-hour window (subscriptions)
         "receipt_min_usd": 0.25,  # API-key users

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`ration xray`**: read-only analysis of past Claude Code sessions (main + subagent transcripts, content never read) showing where usage went by token type, model, day, project and session, with ranked, quantified recommendations (long contexts, idle cache rebuilds, subagent fan-out, premium share, one runaway session). Works from day one, no setup.
+- **Resume-cost tip**: on resuming a session whose prompt cache has expired, say what the rebuild will cost and suggest `/clear` + summary or `/compact` first.
+
 ## [0.1.0] - 2026-10-10
 
 First public release (alpha).

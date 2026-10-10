@@ -527,6 +527,60 @@ def cmd_guard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_xray(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from . import xray
+
+    cfg = config.load()
+    root = Path(args.projects_dir) if args.projects_dir else xray.default_root()
+    r = xray.analyze(root, days=args.days, ctx_cap=args.cap, premium_markers=cfg["claude"].get("premium_markers", "opus"))
+    if args.json:
+        print(json.dumps(r, default=str, indent=2))
+        return 0
+    console.print(header())
+    if not r["calls"]:
+        console.print(f"\nNo Claude Code sessions found in the last {args.days:g} days under {root}.", style="yellow")
+        return 0
+    console.print(
+        f"\n[bold]Quota X-ray[/]  last {args.days:g} days · {r['sessions']} sessions · {r['calls']:,} model calls   "
+        "[dim](read-only, local; shares of cache-weighted token usage)[/]\n"
+    )
+
+    def row(label: str, share: float, width: int = 28) -> Text:
+        t = Text(f"  {label[:26]:<26} ")
+        t.append_text(bar(share * 100, width))
+        t.append(f" {share:>4.0%}")
+        return t
+
+    console.print("[bold]What the tokens were[/]")
+    for k, label in (("cache_read", "re-reading context"), ("cache_write", "writing new context"), ("output", "model output"), ("input", "fresh input")):
+        console.print(row(label, r["components"][k]))
+    console.print("\n[bold]By model[/]")
+    for m, s in list(r["by_model"].items())[:4]:
+        console.print(row(m, s))
+    if len(r["by_day"]) > 1:
+        console.print("\n[bold]By day[/]")
+        for d, s in list(r["by_day"].items())[-8:]:
+            console.print(row(d, s))
+    console.print("\n[bold]Biggest sessions[/]")
+    for s in r["top_sessions"]:
+        sub = f", {s['subagent'] / s['weighted']:.0%} in subagents" if s["subagent"] else ""
+        console.print(
+            f"  {s['share']:>4.0%}  {s['project'][:22]:<22} {s['session'][:8]}  {s['hours']:.1f}h · {s['calls']} calls · peak context {s['peak_ctx'] // 1000}k{sub}"
+        )
+    console.print()
+    if not r["findings"]:
+        console.print("[green]Nothing stands out.[/] Your usage pattern looks healthy.")
+        return 0
+    console.print("[bold]What to change[/]  (biggest first)")
+    for i, f in enumerate(r["findings"], 1):
+        console.print(f"\n  [bold]{i}. {f['title']}[/]")
+        console.print(f"     → {f['do']}")
+        console.print(f"     [dim]({f['assumption']})[/]")
+    return 0
+
+
 def cmd_advisor(args: argparse.Namespace) -> int:
     on = args.state == "on"
     config.set_value("advisor", "enabled", on)
@@ -637,6 +691,11 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("action", choices=["install", "uninstall"])
     g = sub.add_parser("guard", help="turn enforcement on/off (default: observe only)")
     g.add_argument("state", choices=["on", "off"])
+    xr = sub.add_parser("xray", help="where did your usage go? read-only analysis of past sessions, with what to change")
+    xr.add_argument("--days", type=float, default=7)
+    xr.add_argument("--cap", type=int, default=120_000, help="context size (tokens) treated as 'long' (default 120000)")
+    xr.add_argument("--projects-dir", default=None)
+    xr.add_argument("--json", action="store_true")
     ad = sub.add_parser("advisor", help="in-session tips: model suggestions, limit warnings, turn receipts")
     ad.add_argument("state", choices=["on", "off"])
     sub.add_parser("snippet", help="print an optional AGENTS.md / CLAUDE.md fragment (never written for you)")
@@ -659,6 +718,7 @@ COMMANDS = {
     "statusline": cmd_statusline,
     "guard": cmd_guard,
     "advisor": cmd_advisor,
+    "xray": cmd_xray,
     "snippet": cmd_snippet,
 }
 

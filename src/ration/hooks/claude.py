@@ -205,7 +205,9 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
             events = []
     else:
         events = normalize(payload, cfg)
-    if ev == "UserPromptSubmit":
+    if ev == "SessionStart":
+        message = advisor.on_session_start(payload, cfg)
+    elif ev == "UserPromptSubmit":
         adv_events, meta, message = advisor.on_prompt(payload, cfg, store)
         if events:
             events[0].metadata.update(meta)

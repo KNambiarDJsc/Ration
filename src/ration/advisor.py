@@ -413,6 +413,32 @@ def on_prompt(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: flo
     return events, meta, ("RATION: " + "\nRATION: ".join(shown)) if shown else None
 
 
+def on_session_start(payload: dict[str, Any], cfg: dict[str, Any]) -> str | None:
+    """Resuming a session whose prompt cache has expired re-creates the whole context.
+    Say what that costs while the developer can still choose the cheaper path.
+
+    Uses fields Claude Code puts on SessionStart for resume/fork:
+    `prompt_cache_likely_expired`, `context_tokens`, `seconds_since_last_response`,
+    `estimated_cache_write_usd` (a list-price estimate)."""
+    adv = cfg["advisor"]
+    if not (adv["enabled"] and adv.get("resume_tip", True)):
+        return None
+    if payload.get("source") not in ("resume", "fork") or not payload.get("prompt_cache_likely_expired"):
+        return None
+    ctx = int(payload.get("context_tokens") or 0)
+    if ctx < 40_000:
+        return None  # small context: a rebuild is cheap, don't nag
+    idle = payload.get("seconds_since_last_response")
+    usd = payload.get("estimated_cache_write_usd")
+    when = f" after {fmt_h(float(idle) / 3600)} idle" if idle else ""
+    cost = f" (about ${float(usd):.2f} at list price)" if usd else ""
+    return (
+        f"RATION: resuming rebuilds ~{fmt_tok(ctx)} tokens of context{when}{cost}, before your first reply. "
+        "If you only need the gist, start fresh (/clear) with a 3-line summary of where you were, or run /compact first. "
+        "If you need the full thread, carry on."
+    )
+
+
 def deferred_model_tip(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: float | None = None) -> tuple[list[AgentEvent], str | None]:
     """If the model was unknown at prompt time (new session, no status line), give the
     model tip as soon as the transcript reveals which model is answering."""

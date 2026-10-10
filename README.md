@@ -23,6 +23,7 @@ RATION sits **above** your coding agents. It watches what they actually do, read
 
 ## What you get
 
+- **An X-ray of where your quota went.** Claude shows a percentage; RATION shows *why*: which sessions, which habits, and what to change. It works on day one from the session files already on your disk. See below.
 - **Warnings before you hit the wall.** *"At this pace you'll hit your 5-hour limit in ~40m (it resets in 2h00m)."* Measured from your real pace, in Claude Code and in your status line.
 - **The right model for the task you just typed.** *"This looks like a small edit: haiku should be enough (you're on opus). `/model haiku` and `/effort low` save premium quota."* It never switches anything for you.
 - **Receipts.** *"That turn used 7% of your 5-hour window (3 subagents, 41 tool calls)."* Exact token counts from your session files.
@@ -51,6 +52,39 @@ ration doctor    # check hooks, status line, latency
 ```
 
 <p align="center"><img src="docs/assets/status.svg" alt="ration status: 5-hour window 58% used with burn pressure 3.44 HIGH and a projection to run out 2h24m before reset" width="760"></p>
+
+## Where did my quota go? `ration xray`
+
+Claude Code tells you *how much* you've used. It can't tell you *why*. `ration xray` reads your past sessions (read-only, local, no model calls, message content never read) and answers that:
+
+```text
+$ ration xray --days 14
+What the tokens were
+  re-reading context         ██████████████████████░░░░░░  79%
+  writing new context        ████░░░░░░░░░░░░░░░░░░░░░░░░  13%
+  model output               ██░░░░░░░░░░░░░░░░░░░░░░░░░░   8%
+
+Biggest sessions
+   82%  my-agent-project       ad7865a4  249.7h · 1209 calls · peak context 962k
+
+What to change  (biggest first)
+  1. Long contexts: up to 57% of your usage was re-reading context above 120k
+     → /compact (or /clear with a short summary) once a session passes ~120k.
+  2. Idle rebuilds: 8% of usage re-created context after you stepped away (11 times, 10 after an hour or more)
+     → Before leaving a big session for more than a few minutes, /compact it, or start fresh with a 3-line summary.
+  3. One session used 82% of everything: 250h open, peak context 962k
+     → Close the thread when a task is done and start the next one fresh.
+```
+
+That output is from a real machine. The point: most quota isn't spent on *thinking*, it's spent on **re-reading a huge warm context on every call**, and on **rebuilding it after you walk away**. Those are habits, and habits are fixable. Every finding states whether it's measured or an upper-bound estimate, and with what assumption.
+
+RATION also acts at the moment you can still choose. When you resume an old session whose cache has expired:
+
+```text
+RATION: resuming rebuilds ~142k tokens of context after 5h00m idle (about $0.89 at list price),
+before your first reply. If you only need the gist, start fresh (/clear) with a 3-line summary
+of where you were, or run /compact first. If you need the full thread, carry on.
+```
 
 ## In your Claude Code session
 
@@ -106,6 +140,7 @@ What `ration run` does:
 | Command | What it does |
 |---|---|
 | `ration init` | Detect agents, install hooks + status line (asks first, backs up settings) |
+| `ration xray [--days N]` | Where your usage went (context size, idle rebuilds, subagents, models) and what to change |
 | `ration status` | Usage per window, burn pressure, reset forecast, recommendation |
 | `ration watch` | Live view of sessions: progress, stuck score, reasons, suggestion |
 | `ration plan "<task>"` | Show the scheduler's decision and reasons without running |
