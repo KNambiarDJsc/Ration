@@ -46,6 +46,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "resume_tip": True,  # say what resuming an expired-cache session will rebuild
         # Suggest a restart kit when a session's context passes this many tokens (0 = off).
         "context_tip_tokens": 150000,
+        # Status line: show "ctx 312k · msg ≈0.2%" once context passes this size (0 = off).
+        "price_tag_min_ctx": 150000,
+        # Suggest /compact at a natural boundary (tests just went green) above this size (0 = off).
+        "compact_nudge_tokens": 250000,
         # Only show a per-turn receipt when a turn used at least this much.
         "receipt_min_percent": 2.0,  # of the 5-hour window (subscriptions)
         "receipt_min_usd": 0.25,  # API-key users

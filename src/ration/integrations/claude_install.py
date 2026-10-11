@@ -192,3 +192,28 @@ def status(path: Path | None = None) -> dict[str, Any]:
         "statusline": isinstance(sl, dict) and _is_ours(sl.get("command")),
         "disable_all_hooks": bool(data.get("disableAllHooks")),
     }
+
+
+# ---- auto-compact window (the context governor's one official control) --------------------
+def get_auto_compact_window(path: Path | None = None) -> dict[str, Any]:
+    """Where the window is currently configured. Precedence in Claude Code:
+    env var > per-model value (`modelSettings.<model>.autoCompactWindow`) > top-level key."""
+    data = load_settings(path or settings_path())
+    per_model = {
+        m: v["autoCompactWindow"]
+        for m, v in (data.get("modelSettings") or {}).items()
+        if isinstance(v, dict) and v.get("autoCompactWindow")
+    }
+    env_val = (data.get("env") or {}).get("CLAUDE_CODE_AUTO_COMPACT_WINDOW") or os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+    return {"top": data.get("autoCompactWindow"), "per_model": per_model, "env": env_val}
+
+
+def set_auto_compact_window(window: int | None, path: Path | None = None) -> Path | None:
+    """Set (or remove, with None) the top-level `autoCompactWindow`. Backs up first."""
+    p = path or settings_path()
+    data = load_settings(p)
+    if window is None:
+        data.pop("autoCompactWindow", None)
+    else:
+        data["autoCompactWindow"] = int(window)
+    return _write(data, p)

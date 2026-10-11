@@ -515,6 +515,58 @@ def _turn_tokens(store: Any, sid: str, prompt: AgentEvent, tpath: str | None) ->
     return by_model, total, last_ts
 
 
+def any_rate(store: Any, now: float, meter: str = "five_hour") -> float | None:
+    """% of the 5-hour window per million cache-weighted tokens, learned on this machine
+    (median across models; the per-model rates are close, and this is only a price tag)."""
+    rates = [
+        float(e.metadata["rate"])
+        for e in store.events_of_type(EventType.CALIBRATION, since=now - 30 * 86400, limit=2000)
+        if e.metadata.get("meter") == meter and e.metadata.get("rate")
+    ]
+    return statistics.median(rates) if rates else None
+
+
+def message_price(ctx: int, rate: float | None) -> float | None:
+    """% of the 5-hour window one more message costs at this context size."""
+    if not rate:
+        return None
+    return rate * (0.1 * ctx + 5 * 1_500) / 1e6
+
+
+def price_segment(payload: dict[str, Any], store: Any, cfg: dict[str, Any], now: float | None = None) -> str | None:
+    """Status-line price tag, e.g. 'ctx 312k · msg ≈0.2%'. Shown only once context is large."""
+    limit = int(cfg["advisor"].get("price_tag_min_ctx", 0))
+    cw = payload.get("context_window") if isinstance(payload.get("context_window"), dict) else {}
+    cu = cw.get("current_usage") if isinstance(cw.get("current_usage"), dict) else {}
+    ctx = sum(int(cu.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    if not limit or ctx < limit:
+        return None
+    price = message_price(ctx, any_rate(store, time.time() if now is None else now))
+    return f"ctx {fmt_tok(ctx)}" + (f" · msg ≈{price:.1f}%" if price and price >= 0.05 else "")
+
+
+def compact_nudge(store: Any, sid: str, turn: list[AgentEvent], tpath: str | None, cfg: dict[str, Any], now: float) -> str | None:
+    """At a natural boundary (the turn changed files and ended with tests green), a
+    compaction loses the least. Say so once, with what the large context is costing."""
+    adv = cfg["advisor"]
+    limit = int(adv.get("compact_nudge_tokens", 0))
+    if not (adv["enabled"] and limit and tpath):
+        return None
+    changed = any(e.event_type == EventType.FILE_CHANGED for e in turn)
+    results = [e for e in turn if e.event_type == EventType.TEST_RESULT]
+    if not (changed and results and results[-1].metadata.get("ok")):
+        return None
+    ctx = transcript.tail(tpath).last_ctx
+    if ctx < limit or store.recent_advice("compact-nudge", now - 30 * 60, sid):
+        return None
+    price = message_price(ctx, any_rate(store, now))
+    cost = f" (≈{price:.1f}% of your 5-hour window per message)" if price and price >= 0.05 else ""
+    return (
+        f"RATION: good moment to compact: tests are green and the context is {fmt_tok(ctx)}, re-read on every message{cost}. "
+        "`/compact` now loses the least, or `ration handoff --copy` then `/clear` for a fresh start."
+    )
+
+
 def on_stop(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: float | None = None) -> tuple[list[AgentEvent], str | None]:
     now = time.time() if now is None else now
     adv = cfg["advisor"]
@@ -540,8 +592,11 @@ def on_stop(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: float
         "by_model": {m: round(w, 1) for m, w in by_model.items()},
     }
     events = [AgentEvent(PROVIDER, sid, EventType.TURN_SUMMARY, summary, timestamp=now)]
+    nudge = compact_nudge(store, sid, turn, payload.get("transcript_path"), cfg, now)
+    if nudge:
+        events.append(AgentEvent(PROVIDER, sid, EventType.ADVICE, {"kind": "compact-nudge"}, timestamp=now))
     if not (adv["enabled"] and adv["turn_receipts"]):
-        return events, None
+        return events, nudge
 
     detail = [f"{subs} subagent{'s' if subs != 1 else ''}"] if subs else []
     if tools:
@@ -590,4 +645,4 @@ def on_stop(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: float
             msg = f"RATION: that turn used {fmt_tok(tokens)} tokens on {dominant}{dstr}."
     if msg:
         events.append(AgentEvent(PROVIDER, sid, EventType.ADVICE, {"kind": "receipt", "wtok": round(wtok), "subagents": subs}, timestamp=now))
-    return events, msg
+    return events, "\n".join(m for m in (msg, nudge) if m) or None

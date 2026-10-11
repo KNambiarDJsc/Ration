@@ -152,6 +152,9 @@ def main() -> int:
             record_model(payload, store)
             record_cost(payload, store)
             segment = alert_segment(store, cfg)
+            price = advisor.price_segment(payload, store, cfg) if cfg["advisor"]["enabled"] else None
+            if price:
+                segment = f"{price}  {segment}" if segment else price
     except Exception:
         pass
     chained = run_chained(cfg["claude"].get("chained_statusline", ""), raw)

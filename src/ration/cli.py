@@ -534,6 +534,148 @@ def cmd_guard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _gov_state_path() -> Any:
+    return config.ration_home() / "governor.json"
+
+
+def _gov_state() -> dict[str, Any]:
+    p = _gov_state_path()
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def cmd_governor(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from . import advisor, governor, xray
+    from .integrations import claude_install as ci
+
+    root = Path(args.projects_dir) if args.projects_dir else xray.default_root()
+    try:
+        cur = ci.get_auto_compact_window()
+    except ci.SettingsError as e:
+        console.print(str(e), style="red")
+        return 2
+    configured = int(cur["env"]) if str(cur["env"] or "").isdigit() else int(cur["top"]) if cur["top"] else None
+    current = configured or governor.DEFAULT_WINDOW
+
+    if args.action == "revert":
+        st = _gov_state()
+        if "previous" not in st:
+            console.print("Nothing to revert: RATION hasn't changed your auto-compact window.")
+            return 0
+        prev = st["previous"]
+        b = ci.set_auto_compact_window(prev)
+        _gov_state_path().unlink(missing_ok=True)
+        console.print(f"Restored autoCompactWindow: {prev if prev else 'unset (Claude Code default)'}" + (f"  (backup: {b.name})" if b else ""))
+        return 0
+
+    if args.action == "apply":
+        window = args.window
+        if window is None:
+            rep = governor.run(root, days=args.days, current_window=current)
+            window = rep.recommended
+            if window is None:
+                console.print(f"No change recommended. {rep.reason}")
+                return 0
+        if not governor.MIN_WINDOW <= window <= 1_000_000:
+            console.print("Window must be between 100,000 and 1,000,000 tokens.", style="red")
+            return 2
+        warn = []
+        if cur["env"]:
+            warn.append("CLAUDE_CODE_AUTO_COMPACT_WINDOW is set and takes precedence over this setting.")
+        if cur["per_model"]:
+            warn.append(f"Per-model windows ({', '.join(f'{m}={v}' for m, v in cur['per_model'].items())}) take precedence for those models; use /autocompact auto in Claude Code to clear them.")
+        st = _gov_state()
+        if "previous" not in st:
+            _gov_state_path().parent.mkdir(parents=True, exist_ok=True)
+            _gov_state_path().write_text(json.dumps({"previous": cur["top"], "applied_at": time.time(), "window": window}), encoding="utf-8")
+        else:
+            st.update(window=window)
+            _gov_state_path().write_text(json.dumps(st), encoding="utf-8")
+        b = ci.set_auto_compact_window(window)
+        console.print(f"Set autoCompactWindow = {window:,} in {ci.settings_path()}" + (f"  (backup: {b.name})" if b else ""))
+        for w in warn:
+            console.print(f"  ! {w}", style="yellow")
+        console.print("Takes effect in new sessions. Undo any time: [bold]ration governor revert[/] (or `/autocompact auto` in Claude Code).")
+        console.print("Check the real effect later with: [bold]ration governor status[/]")
+        return 0
+
+    if args.action == "status":
+        st = _gov_state()
+        if "applied_at" not in st:
+            console.print("The governor hasn't been applied yet. Run `ration governor` to see the recommendation.")
+            return 0
+        r = governor.realized(root, float(st["applied_at"]))
+        console.print(header())
+        console.print(f"\n[bold]Governor status[/]  window {st['window']:,} since {time.strftime('%Y-%m-%d %H:%M', time.localtime(st['applied_at']))}")
+        t = Table("", "before", "after")
+        for label, key, fmt in (
+            ("calls", "calls", "{:,.0f}"),
+            ("average context (tokens)", "avg_context", "{:,.0f}"),
+            ("usage per call (cache-weighted)", "cost_per_call", "{:,.0f}"),
+            ("compactions per 100 calls", "compactions_per_100_calls", "{:.1f}"),
+        ):
+            t.add_row(label, fmt.format(r["before"][key]), fmt.format(r["after"][key]))
+        console.print(t)
+        b, a = r["before"]["cost_per_call"], r["after"]["cost_per_call"]
+        if r["after"]["calls"] < 30:
+            console.print("Not enough calls since applying to judge yet (need ~30+).", style="dim")
+        elif b:
+            console.print(f"Usage per call changed by {a / b - 1:+.0%}. Different work shifts this; treat it as a signal, not a guarantee.")
+        if r["after"]["compactions_per_100_calls"] > 8:
+            console.print("Compactions are frequent. Consider a higher window: `ration governor apply --window 400000`.", style="yellow")
+        return 0
+
+    # report
+    rep = governor.run(root, days=args.days, current_window=current)
+    if args.json:
+        print(json.dumps(governor.as_dict(rep), default=str, indent=2))
+        return 0
+    store_rate = None
+    try:
+        with Store() as store:
+            store_rate = advisor.any_rate(store, time.time())
+    except Exception:
+        pass
+    console.print(header())
+    console.print(f"\n[bold]Context governor[/]  last {args.days:g} days · {rep.sessions} sessions · {rep.calls:,} calls  [dim](read-only replay of your real sessions)[/]\n")
+    src = "your setting" if configured else "Claude Code default"
+    console.print(f"Auto-compact window now: [bold]{current // 1000}k[/] ({src}). Largest context you reached: {rep.peak_ctx // 1000}k.")
+    if rep.b_samples:
+        basis = f"measured from {rep.b_samples} compaction{'s' if rep.b_samples != 1 else ''}" + ("" if rep.b_samples >= 3 else "; assumed until there are 3+")
+        console.print(f"After a compaction your context lands near [bold]{rep.post_compaction_b / 1000:.0f}k[/] ({basis}).")
+    if store_rate:
+        hi, lo = advisor.message_price(rep.peak_ctx, store_rate), advisor.message_price(100_000, store_rate)
+        if hi and lo:
+            console.print(f"One message costs about [bold]{hi:.2f}%[/] of your 5-hour window at {rep.peak_ctx // 1000}k context, vs [bold]{lo:.2f}%[/] at 100k [dim](calibrated on this machine)[/].")
+    if not rep.rows:
+        console.print(f"\n{rep.reason}")
+        return 0
+    console.print()
+    t = Table("window", "saves (measured)", "saves (worst case)", "compactions", "")
+    for row in rep.rows:
+        mark = "[green]◀ recommended[/]" if row.window == rep.recommended else ("[red]thrashes[/]" if row.thrash else "")
+        worst = "compacts too often" if row.thrash else f"{row.worst:+.0%}"
+        t.add_row(f"{row.window // 1000}k", f"{row.measured:+.0%}", worst, str(row.compactions), mark if row.window == rep.recommended else "")
+    console.print(t)
+    console.print(
+        f"[dim]Model check: replaying your current window reproduces your real usage to within {abs(rep.model_error):.0%}"
+        + ("" if rep.confident else " [yellow]— low confidence, treat numbers as rough[/]") + "[/]"
+    )
+    console.print()
+    if rep.recommended:
+        console.print(f"[bold]Recommendation: {rep.recommended // 1000}k[/]  est. saving {rep.saving_low:.0%} to {rep.saving_measured:.0%} of your usage")
+        console.print(f"  {rep.reason}")
+        console.print("  Trade-off: compacting earlier summarizes older detail sooner. Use `ration handoff` for a lossless restart at task boundaries.")
+        console.print("  Apply: [bold]ration governor apply[/]   Undo: [bold]ration governor revert[/]   Verify later: [bold]ration governor status[/]")
+    else:
+        console.print(f"[bold]No change recommended.[/] {rep.reason}")
+    return 0
+
+
 def cmd_handoff(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -737,6 +879,12 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("action", choices=["install", "uninstall"])
     g = sub.add_parser("guard", help="turn enforcement on/off (default: observe only)")
     g.add_argument("state", choices=["on", "off"])
+    gv = sub.add_parser("governor", help="find the cost-optimal auto-compact window from your own history, apply it, verify it")
+    gv.add_argument("action", nargs="?", choices=["report", "apply", "revert", "status"], default="report")
+    gv.add_argument("--days", type=float, default=30)
+    gv.add_argument("--window", type=int, default=None, help="with apply: use this window instead of the recommendation")
+    gv.add_argument("--projects-dir", default=None)
+    gv.add_argument("--json", action="store_true")
     ho = sub.add_parser("handoff", help="restart kit: /clear without losing the thread (no model call)")
     ho.add_argument("--session", default=None, help="session id (prefix) instead of the latest one for this folder")
     ho.add_argument("--cwd", default=".")
@@ -773,6 +921,7 @@ COMMANDS = {
     "guard": cmd_guard,
     "advisor": cmd_advisor,
     "xray": cmd_xray,
+    "governor": cmd_governor,
     "handoff": cmd_handoff,
     "snippet": cmd_snippet,
 }

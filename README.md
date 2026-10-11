@@ -53,6 +53,40 @@ ration doctor    # check hooks, status line, latency
 
 <p align="center"><img src="docs/assets/status.svg" alt="ration status: 5-hour window 58% used with burn pressure 3.44 HIGH and a projection to run out 2h24m before reset" width="760"></p>
 
+## The big lever: `ration governor`
+
+Every message re-reads your whole context. At 900k tokens, one message costs roughly **10x** what it does at 90k (about 0.5% vs 0.05% of a 5-hour window, calibrated on a real machine). Claude Code's default is to compact at **~967k** on 1M-window models, and after a compaction the context lands near the same ~85k whether it was 220k or 930k. Waiting longer only makes every message more expensive.
+
+`ration governor` replays your *real* sessions under different auto-compact windows and tells you the cheapest one that is still safe:
+
+```text
+$ ration governor
+Auto-compact window now: 967k (Claude Code default). Largest context you reached: 962k.
+After a compaction your context lands near 85k.
+One message costs about 0.53% of your 5-hour window at 962k context, vs 0.09% at 100k.
+
+ window │ saves (measured) │ saves (worst case) │ compactions
+ 150k   │ +47%             │ compacts too often │ 68
+ 200k   │ +50%             │ compacts too often │ 29
+ 250k   │ +48%             │ +14%               │ 17
+ 300k   │ +44%             │ +32%               │ 13
+ 400k   │ +37%             │ +31%               │ 7    ◀ recommended
+ 500k   │ +31%             │ +26%               │ 5
+Model check: replaying your current window reproduces your real usage to within 1%
+
+Recommendation: 400k  est. saving 31% to 37% of your usage
+```
+
+It picks the window that saves the most under *pessimistic* assumptions, not the theoretical optimum, because the cheapest window in theory compacts every few calls if the post-compaction size is larger than measured. If you don't have long sessions, it says "no change recommended".
+
+```bash
+ration governor apply      # writes autoCompactWindow (backed up); or /autocompact 400k in Claude Code
+ration governor status     # real before/after: usage per call, average context, compactions per 100 calls
+ration governor revert     # restore your previous setting
+```
+
+In the session you also get a price tag in the status line once context is large (`ctx 312k · msg ≈0.2%`) and a nudge to compact at a natural boundary (tests just went green) rather than mid-task. Design, model and limits: [docs/design/governor.md](docs/design/governor.md).
+
 ## Where did my quota go? `ration xray`
 
 Claude Code tells you *how much* you've used. It can't tell you *why*. `ration xray` reads your past sessions (read-only, local, no model calls, message content never read) and answers that:
