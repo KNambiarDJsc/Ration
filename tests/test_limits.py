@@ -109,18 +109,31 @@ def cost(store, sid, usd, ts):
     store.add_event(AgentEvent("claude", sid, EventType.COST, {"usd": usd}, timestamp=ts))
 
 
-def test_api_key_user_gets_dollar_budget_and_pace_alert(store, cfg):
+# The daily budget resets at local midnight, so these tests pin the clock instead of using time.time().
+NOON = time.mktime((2026, 6, 15, 12, 0, 0, 0, 0, -1))
+
+
+def spend_16_of_20(store, cfg, now):
     cfg["budget"]["daily_usd"] = 20
-    now = time.time()
-    start = now - 2 * H
-    cost(store, "a", 0.0, start)
+    cost(store, "a", 0.0, now - 2 * H)
     cost(store, "a", 6.0, now - 0.5 * H)
     cost(store, "b", 4.0, now)
     cost(store, "a", 12.0, now)  # $16 of $20 today, $10 in the last 30 min
     w = next(w for w in provider_budgets(store, cfg, now=now)["claude"].windows if w.window == "daily_usd")
     assert round(w.used_percent) == 80
-    kind, msg = advisor.budget_alert(provider_budgets(store, cfg, now=now))
+
+
+def test_api_key_user_gets_dollar_budget_and_pace_alert(store, cfg):
+    spend_16_of_20(store, cfg, NOON)
+    kind, msg = advisor.budget_alert(provider_budgets(store, cfg, now=NOON))
     assert kind == "pace:daily_usd" and "daily spend budget" in msg
+
+
+def test_no_pace_alert_when_the_daily_budget_resets_first(store, cfg):
+    """The same spend at 23:36: the budget resets in 24 minutes, before this pace would use it up."""
+    late = NOON + 11.6 * H
+    spend_16_of_20(store, cfg, late)
+    assert advisor.budget_alert(provider_budgets(store, cfg, now=late)) is None
 
 
 def test_api_key_user_dollar_receipt(store, cfg):

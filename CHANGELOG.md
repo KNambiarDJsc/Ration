@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Hooks import the advisor, handoff and transcript modules only on the events that use them. Measured on Windows with Python 3.11: a tool-call hook does about 76 ms of work instead of about 109 ms, on top of a 50 ms interpreter start.
+
+### Fixed
+- A hook payload that starts with a UTF-8 byte order mark (a PowerShell pipe adds one) was logged as a hook error and dropped.
+- The daily dollar-budget test depended on the time of day and failed late in the evening. The clock is pinned, and the late-evening case (the budget resets before the pace would use it up, so no alert) is its own test.
+
 ## [0.2.0] - 2026-10-11
 
 ### Verified in real Claude Code sessions (2.1.296)

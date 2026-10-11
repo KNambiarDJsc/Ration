@@ -86,6 +86,37 @@ def test_denied_test_command_is_not_counted_as_a_failing_test():
     assert evs == []  # no TOOL_FAILED / TEST_RESULT for a call that never ran
 
 
+def test_hook_hot_path_does_not_load_the_advisor(tmp_path):
+    """A tool call finishing is the most frequent hook call. It must not pay ~75 ms to
+    import the advisor, handoff or transcript modules it doesn't use."""
+    code = (
+        "import json, sys, io\n"
+        "import ration.hooks.claude as h\n"
+        "from ration import config\n"
+        "from ration.store import Store\n"
+        "p = {'hook_event_name': 'PostToolUse', 'session_id': 's', 'tool_name': 'Bash', 'tool_input': {'command': 'ls'}, 'tool_response': {'stdout': 'x'}}\n"
+        "with Store() as s:\n"
+        "    h.handle(p, config.load(), s)\n"
+        "print(json.dumps([m for m in ('ration.advisor', 'ration.handoff', 'ration.transcript', 'ration.difficulty') if m in sys.modules]))\n"
+    )
+    env = dict(os.environ, RATION_HOME=str(tmp_path / "h"))
+    env.pop("RATION_RUN_ID", None)
+    r = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, env=env, timeout=60)
+    assert r.returncode == 0, r.stderr.decode()
+    assert json.loads(r.stdout.decode().strip().splitlines()[-1]) == []
+
+
+def test_hook_accepts_a_payload_with_a_byte_order_mark(tmp_path):
+    """PowerShell pipes prepend a UTF-8 BOM. That used to land in hook-errors.log."""
+    env = dict(os.environ, RATION_HOME=str(tmp_path / "h"))
+    env.pop("RATION_RUN_ID", None)
+    payload = b"\xef\xbb\xbf" + json.dumps({"hook_event_name": "PostToolUse", "session_id": "bom", "tool_name": "Bash", "tool_input": {"command": "ls"}}).encode()
+    r = subprocess.run([sys.executable, "-I", "-m", "ration.hooks.claude"], input=payload, capture_output=True, env=env, timeout=60)
+    assert r.returncode == 0
+    assert (tmp_path / "h" / "ration.db").exists()  # the event was recorded
+    assert not (tmp_path / "h" / "hook-errors.log").exists()
+
+
 def test_hooks_stay_out_of_ration_run_child_sessions(tmp_path):
     env = dict(os.environ, RATION_RUN_ID="run_x", RATION_HOME=str(tmp_path / "h"))
     payload = json.dumps({"hook_event_name": "PostToolUse", "session_id": "child", "tool_name": "Bash", "tool_input": {"command": "ls"}}).encode()

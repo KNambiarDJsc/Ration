@@ -141,7 +141,7 @@ def alert_segment(store: Store, cfg: dict[str, Any]) -> str | None:
 def main() -> int:
     raw = sys.stdin.buffer.read()
     try:
-        payload = json.loads(raw.decode("utf-8", "replace") or "{}")
+        payload = json.loads(raw.decode("utf-8-sig", "replace") or "{}")
     except ValueError:
         payload = {}
     cfg = config.load()

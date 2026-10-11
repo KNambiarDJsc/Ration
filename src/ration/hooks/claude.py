@@ -19,8 +19,11 @@ import sys
 import time
 from typing import Any
 
-from .. import advisor, config, handoff, transcript
+from .. import config
 from ..models import AgentEvent, EventType
+
+# `advisor`, `handoff` and `transcript` are imported inside the branches that need them.
+# They cost ~75 ms to import, and most hook calls (a tool call finishing) need none of them.
 from ..normalize import AGENT_TOOLS, is_premium, sig, tool_events
 from ..store import Store
 from ..stuck import detect, recommend
@@ -72,6 +75,8 @@ def normalize(payload: dict[str, Any], cfg: dict[str, Any]) -> list[AgentEvent]:
             store_paths=store_paths,
         )
     if ev == "SubagentStop":
+        from .. import transcript
+
         meta: dict[str, Any] = {"agent_type": payload.get("agent_type")}
         sl = transcript.read_slice(payload.get("agent_transcript_path"))
         if sl.messages:  # exact subagent tokens from its own transcript
@@ -200,6 +205,8 @@ def save_for_clear(payload: dict[str, Any], cfg: dict[str, Any]) -> None:
     h = cfg["handoff"]
     if not h["auto"] or payload.get("reason") != "clear" or not payload.get("transcript_path"):
         return
+    from .. import handoff
+
     cwd = payload.get("cwd") or os.getcwd()
     text = handoff.build(payload["transcript_path"], cwd, max_chars=int(h["max_chars"]))
     handoff.save_pending(cwd, text)
@@ -209,6 +216,8 @@ def carry_over(payload: dict[str, Any], cfg: dict[str, Any]) -> tuple[str, str] 
     h = cfg["handoff"]
     if not h["auto"] or payload.get("source") != "clear":
         return None
+    from .. import handoff
+
     cwd = payload.get("cwd") or os.getcwd()
     text = handoff.take_pending(cwd, float(h["ttl_minutes"]))
     if not text:
@@ -232,6 +241,8 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
     else:
         events = normalize(payload, cfg)
     if ev == "SessionStart":
+        from .. import advisor
+
         message = advisor.on_session_start(payload, cfg)
         carried = carry_over(payload, cfg)
         if carried:
@@ -241,6 +252,8 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
     elif ev == "SessionEnd":
         save_for_clear(payload, cfg)
     elif ev == "UserPromptSubmit":
+        from .. import advisor
+
         adv_events, meta, message = advisor.on_prompt(payload, cfg, store)
         if events:
             events[0].metadata.update(meta)
@@ -248,12 +261,21 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
     elif ev in ("PostToolUse", "PostToolUseFailure", "Stop"):
         store.add_events(events)
         events = []
-        adv_events, message = advisor.deferred_model_tip(payload, cfg, store)
-        events += adv_events
-        if ev == "Stop":
-            stop_events, receipt = advisor.on_stop(payload, cfg, store)
-            events += stop_events
-            message = "\n".join(m for m in (message, receipt) if m) or None
+        # Hot path: only load the advisor when it has something to do. A tool call
+        # finishing needs it only if a model tip is still waiting on the first reply.
+        pending = False
+        if ev != "Stop":
+            last = store.last_event(str(payload.get("session_id") or "unknown"), EventType.PROMPT_SUBMITTED)
+            pending = bool(last and last.metadata.get("model_tip_pending"))
+        if ev == "Stop" or pending:
+            from .. import advisor
+
+            adv_events, message = advisor.deferred_model_tip(payload, cfg, store)
+            events += adv_events
+            if ev == "Stop":
+                stop_events, receipt = advisor.on_stop(payload, cfg, store)
+                events += stop_events
+                message = "\n".join(m for m in (message, receipt) if m) or None
     if events:
         store.add_events(events)
     if ev in ("PostToolUse", "PostToolUseFailure"):
@@ -272,7 +294,7 @@ def main() -> int:
         return 0  # inside a `ration run` child session: the orchestrator observes the stream
     try:
         raw = sys.stdin.buffer.read()
-        payload = json.loads(raw.decode("utf-8", "replace") or "{}")
+        payload = json.loads(raw.decode("utf-8-sig", "replace") or "{}")
         cfg = config.load()
         with Store() as store:
             out = handle(payload, cfg, store)
