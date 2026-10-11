@@ -36,7 +36,21 @@ compaction (ctx ≥ W) = 0.1·ctx + 5·S + 1.25·B ; then ctx = B + R
 
 `W` is the auto-compact window, `B` the post-compaction size (measured), `S` the summary length, `R` tokens re-fetched afterwards (files read again). Growth `g` and output are **replayed from the real transcript**; only the policy `W` changes. The model reproduces your actual usage to within ~1–12% when run at your current window, which is the check that makes the what-ifs meaningful.
 
-Why a sensible window is *not* "as small as possible": if `B + R` approaches `W`, Claude compacts almost every call and cost explodes (we see 4x–6x in simulation). The governor therefore requires a window to be **non-thrashing and still worthwhile under pessimistic parameters** (B x1.5, R 100k), and picks the best *worst case*, preferring the larger window on ties.
+Why a sensible window is *not* "as small as possible": if `B + R` approaches `W`, Claude compacts almost every call and cost explodes (we see 4x–6x in simulation). The governor therefore requires a window to be **non-thrashing and still worthwhile under pessimistic parameters**, and picks the best *worst case*, preferring the larger window on ties.
+
+Every candidate is scored under five assumption sets:
+
+| Set | Post-compaction size | Re-fetched after each compaction | Compaction request reads the conversation at |
+|---|---|---|---|
+| optimistic | 0.8 x measured | 25k | cache-read rate (0.1) |
+| measured | measured | 25k | 0.1 |
+| heavy re-fetch | measured | 75k | 0.1 |
+| uncached compaction | measured | 25k | full rebuild rate (1.25) |
+| pessimistic | 1.5 x measured | 100k | 1.25 |
+
+On the reference machine 400k saves 37% (measured) and 26% (pessimistic); 250k saves 48% measured but *loses* 9% in the pessimistic set, so it is rejected.
+
+The replay must be compared against the window the history was actually recorded under. After `apply`, the report replays only the history from before the change, at the previous window; otherwise the model check is meaningless (this was a real bug, caught the first time the setting was applied).
 
 ## 4. System
 
@@ -83,7 +97,7 @@ Surfaces:
 
 | Phase | What | Expected value (measured basis) |
 |---|---|---|
-| Now | Window recommendation, price tag, boundary nudge, verifier | 30–50% of usage for long-session users (this machine, simulated) |
+| Now | Window recommendation, price tag, boundary nudge, verifier | 26–37% of usage for long-session users (this machine, simulated, unverified live) |
 | Next | Quality guard + automatic backoff; per-model windows; per-project windows | Safety |
 | Next | Idle-gap policy: at cache expiry, fresh-start or compact *before* paying the rebuild | Part of the ~8% idle rebuild share |
 | Later | Delegation gate on native subagents (Shunt's idea, no external service): route bulk reads/searches to a cheap-model subagent, return a pointer + summary | ~2% on this workload; higher for 200k-window users (to be measured) |
@@ -96,4 +110,5 @@ Surfaces:
 - **Calibration is thin** (a handful of turns): the % price tags are approximate until more turns are observed.
 - **Quality is not measured.** Compacting earlier summarizes older detail sooner. The model counts re-fetch as a token cost (R) but not as lower answer quality. This is why the recommendation favors larger windows on ties, and why handoff exists for lossless restarts.
 - **Subscription limits may weight tokens differently** from the published price ratios the cost model uses. Calibration on the 5-hour meter agrees in direction; absolute % per message should be read as an estimate.
+- **Anthropic recommends the opposite default.** On Claude Code 2.1.296, `/autocompact` reports `auto` as 1M tokens for Haiku 5.5, Sonnet 5.5 and Opus 5.5 and states that auto "is strongly recommended for the best cost and performance" and that overriding it "may result in high token usage, especially when resuming long sessions". They have fleet-wide data; this design has one machine. The disagreement is real and unresolved: the replay says a lower window is cheaper for long sessions even when the compaction request is priced as a full rebuild, but only live before/after numbers (`ration governor status`) can settle it for a given user. Known one-off cost: the first message into an existing session larger than the new window triggers one large compaction.
 - **Claude Code already flags long context** in `/usage` at ≥10% of usage. The governor's contribution is the quantified, backtested, robustly chosen setting plus verification, not the observation itself.

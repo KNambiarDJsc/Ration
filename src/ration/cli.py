@@ -560,6 +560,10 @@ def cmd_governor(args: argparse.Namespace) -> int:
         return 2
     configured = int(cur["env"]) if str(cur["env"] or "").isdigit() else int(cur["top"]) if cur["top"] else None
     current = configured or governor.DEFAULT_WINDOW
+    # History recorded before RATION changed the window ran at the previous one; replay against that.
+    st0 = _gov_state()
+    hist_until = float(st0["applied_at"]) if st0.get("applied_at") else None
+    hist_window = int(st0.get("previous") or governor.DEFAULT_WINDOW) if hist_until else current
 
     if args.action == "revert":
         st = _gov_state()
@@ -575,7 +579,7 @@ def cmd_governor(args: argparse.Namespace) -> int:
     if args.action == "apply":
         window = args.window
         if window is None:
-            rep = governor.run(root, days=args.days, current_window=current)
+            rep = governor.run(root, days=args.days, current_window=hist_window, until=hist_until)
             window = rep.recommended
             if window is None:
                 console.print(f"No change recommended. {rep.reason}")
@@ -630,7 +634,7 @@ def cmd_governor(args: argparse.Namespace) -> int:
         return 0
 
     # report
-    rep = governor.run(root, days=args.days, current_window=current)
+    rep = governor.run(root, days=args.days, current_window=hist_window, until=hist_until)
     if args.json:
         print(json.dumps(governor.as_dict(rep), default=str, indent=2))
         return 0
@@ -644,6 +648,9 @@ def cmd_governor(args: argparse.Namespace) -> int:
     console.print(f"\n[bold]Context governor[/]  last {args.days:g} days · {rep.sessions} sessions · {rep.calls:,} calls  [dim](read-only replay of your real sessions)[/]\n")
     src = "your setting" if configured else "Claude Code default"
     console.print(f"Auto-compact window now: [bold]{current // 1000}k[/] ({src}). Largest context you reached: {rep.peak_ctx // 1000}k.")
+    if hist_until:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(hist_until))
+        console.print(f"[dim]RATION changed it on {when}. The replay below uses your history before that, which ran at {hist_window // 1000}k.[/]")
     if rep.b_samples:
         basis = f"measured from {rep.b_samples} compaction{'s' if rep.b_samples != 1 else ''}" + ("" if rep.b_samples >= 3 else "; assumed until there are 3+")
         console.print(f"After a compaction your context lands near [bold]{rep.post_compaction_b / 1000:.0f}k[/] ({basis}).")
@@ -659,14 +666,20 @@ def cmd_governor(args: argparse.Namespace) -> int:
     for row in rep.rows:
         mark = "[green]◀ recommended[/]" if row.window == rep.recommended else ("[red]thrashes[/]" if row.thrash else "")
         worst = "compacts too often" if row.thrash else f"{row.worst:+.0%}"
-        t.add_row(f"{row.window // 1000}k", f"{row.measured:+.0%}", worst, str(row.compactions), mark if row.window == rep.recommended else "")
+        note = mark if row.window == rep.recommended else ""
+        if hist_until and row.window == current:
+            note = (note + "  " if note else "") + "[cyan]◀ your setting[/]"
+        t.add_row(f"{row.window // 1000}k", f"{row.measured:+.0%}", worst, str(row.compactions), note)
     console.print(t)
     console.print(
         f"[dim]Model check: replaying your current window reproduces your real usage to within {abs(rep.model_error):.0%}"
         + ("" if rep.confident else " [yellow]— low confidence, treat numbers as rough[/]") + "[/]"
     )
     console.print()
-    if rep.recommended:
+    if rep.recommended and hist_until and rep.recommended == current:
+        console.print(f"[bold]You are on the recommended window ({current // 1000}k).[/]  est. saving {rep.saving_low:.0%} to {rep.saving_measured:.0%} vs {hist_window // 1000}k")
+        console.print("  Check what actually happened: [bold]ration governor status[/]   Undo: [bold]ration governor revert[/]")
+    elif rep.recommended:
         console.print(f"[bold]Recommendation: {rep.recommended // 1000}k[/]  est. saving {rep.saving_low:.0%} to {rep.saving_measured:.0%} of your usage")
         console.print(f"  {rep.reason}")
         console.print("  Trade-off: compacting earlier summarizes older detail sooner. Use `ration handoff` for a lossless restart at task boundaries.")

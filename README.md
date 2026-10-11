@@ -68,16 +68,18 @@ One message costs about 0.53% of your 5-hour window at 962k context, vs 0.09% at
  window │ saves (measured) │ saves (worst case) │ compactions
  150k   │ +47%             │ compacts too often │ 68
  200k   │ +50%             │ compacts too often │ 29
- 250k   │ +48%             │ +14%               │ 17
- 300k   │ +44%             │ +32%               │ 13
- 400k   │ +37%             │ +31%               │ 7    ◀ recommended
- 500k   │ +31%             │ +26%               │ 5
+ 250k   │ +48%             │ -9%                │ 18
+ 300k   │ +44%             │ +23%               │ 14
+ 400k   │ +37%             │ +26%               │ 7    ◀ recommended
+ 500k   │ +31%             │ +24%               │ 6
 Model check: replaying your current window reproduces your real usage to within 1%
 
-Recommendation: 400k  est. saving 31% to 37% of your usage
+Recommendation: 400k  est. saving 26% to 37% of your usage
 ```
 
 It picks the window that saves the most under *pessimistic* assumptions, not the theoretical optimum, because the cheapest window in theory compacts every few calls if the post-compaction size is larger than measured. If you don't have long sessions, it says "no change recommended".
+
+> **Read this before applying.** These savings are a replay of past sessions, not a measurement of the future, and Claude Code's own `/autocompact` text says the `auto` window (1M on current models) is "strongly recommended for the best cost and performance" and that overriding it "may result in high token usage, especially when resuming long sessions". The worst case above already prices an uncached compaction request, a 1.5x larger post-compaction context and 100k tokens re-fetched each time, and the first message into an existing session above the new window will trigger one large compaction. Use `ration governor status` to see what actually happened on your machine, and `ration governor revert` if it didn't pay off.
 
 ```bash
 ration governor apply      # writes autoCompactWindow (backed up); or /autocompact 400k in Claude Code

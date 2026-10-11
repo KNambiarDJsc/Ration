@@ -124,6 +124,32 @@ def test_status_verifies_before_and_after(tmp_path, capsys):
     assert r["after"]["avg_context"] < r["before"]["avg_context"]
 
 
+def test_after_apply_the_replay_still_uses_the_window_history_ran_at(tmp_path, capsys):
+    """Regression: once the setting is 400k, the report must not treat 400k as the
+    baseline for history that was recorded at the old window."""
+    root = projects(tmp_path)  # history recorded at the ~900k default
+    p = ci.settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{}", encoding="utf-8")
+    assert cli.main(["governor", "apply", "--window", "400000"]) == 0
+    capsys.readouterr()
+    assert cli.main(["governor", "--projects-dir", str(root), "--days", "1", "--json"]) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["current_window"] == governor.DEFAULT_WINDOW  # replayed against what really happened
+    assert abs(rep["model_error"]) < 0.35 and rep["recommended_window"] is not None
+    assert cli.main(["governor", "--projects-dir", str(root), "--days", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "RATION changed it" in out and "your setting" in out
+
+
+def test_recommendation_survives_an_uncached_compaction_request(tmp_path):
+    labels = [s[0] for s in governor.SCENARIOS]
+    assert "uncached compaction" in labels and "pessimistic" in labels
+    rep = governor.run(projects(tmp_path), days=1, now=NOW)
+    best = next(r for r in rep.rows if r.window == rep.recommended)
+    assert best.by_scenario["uncached compaction"] > 0 and best.by_scenario["pessimistic"] >= governor.MIN_WORTHWHILE_SAVING
+
+
 def test_report_cli_runs_on_empty_history(tmp_path, capsys):
     assert cli.main(["governor", "--projects-dir", str(tmp_path / "none")]) == 0
     assert "Not enough" in capsys.readouterr().out

@@ -36,12 +36,14 @@ TTL_S = 3600.0
 DEFAULT_B = 85_000  # median post-compaction context measured on a real machine
 SUMMARY_OUT = 15_000
 CANDIDATES = (150_000, 200_000, 250_000, 300_000, 400_000, 500_000, 700_000)
-# (label, B multiplier, tokens re-fetched after each compaction)
+# (label, B multiplier, tokens re-fetched after each compaction, weight of the compaction
+#  request's read of the conversation: 0.1 if it hits the cache, 1.25 if it is a full rebuild)
 SCENARIOS = (
-    ("optimistic", 0.8, 25_000),
-    ("measured", 1.0, 25_000),
-    ("heavy re-fetch", 1.0, 75_000),
-    ("pessimistic", 1.5, 100_000),
+    ("optimistic", 0.8, 25_000, 0.1),
+    ("measured", 1.0, 25_000, 0.1),
+    ("heavy re-fetch", 1.0, 75_000, 0.1),
+    ("uncached compaction", 1.0, 25_000, 1.25),
+    ("pessimistic", 1.5, 100_000, 1.25),
 )
 MAX_COMPACTIONS_PER_CALL = 1 / 12  # more often than this is thrashing
 MIN_WORTHWHILE_SAVING = 0.15
@@ -94,7 +96,7 @@ class Report:
 
 
 # ---- data -------------------------------------------------------------------------------
-def load_threads(root: Path, since: float, min_calls: int = 20) -> list[list[Call]]:
+def load_threads(root: Path, since: float, min_calls: int = 20, until: float | None = None) -> list[list[Call]]:
     threads: list[list[Call]] = []
     for p in root.glob("*/*.jsonl"):
         try:
@@ -102,7 +104,7 @@ def load_threads(root: Path, since: float, min_calls: int = 20) -> list[list[Cal
                 continue
         except OSError:
             continue
-        calls = sorted((c for c in iter_calls(p) if c.ts >= since), key=lambda c: c.ts)
+        calls = sorted((c for c in iter_calls(p) if c.ts >= since and (until is None or c.ts < until)), key=lambda c: c.ts)
         if len(calls) >= min_calls:
             threads.append(calls)
     return threads
@@ -142,7 +144,9 @@ def growth_series(calls: list[Call]) -> list[float | None]:
 
 
 # ---- simulation ---------------------------------------------------------------------------
-def simulate(calls: list[Call], window: int, b: float, r: float, s: float = SUMMARY_OUT, ttl: float = TTL_S) -> Cost:
+def simulate(
+    calls: list[Call], window: int, b: float, r: float, s: float = SUMMARY_OUT, ttl: float = TTL_S, read_weight: float = 0.1
+) -> Cost:
     ds = growth_series(calls)
     pos = [d for d in ds[1:] if d is not None and d > 0]
     typical = statistics.median(pos) if pos else 1500.0
@@ -160,15 +164,15 @@ def simulate(calls: list[Call], window: int, b: float, r: float, s: float = SUMM
             ctx += max(d, 0.0)
         if ctx >= window:
             n += 1
-            cost += 0.1 * ctx + 5 * s + 1.25 * b + 1.25 * r
+            cost += read_weight * ctx + 5 * s + 1.25 * b + 1.25 * r
             ctx = b + r
     return Cost(cost, n, len(calls))
 
 
-def evaluate(threads: list[list[Call]], window: int, b: float, r: float) -> Cost:
+def evaluate(threads: list[list[Call]], window: int, b: float, r: float, read_weight: float = 0.1) -> Cost:
     tot = Cost()
     for t in threads:
-        c = simulate(t, window, b, r)
+        c = simulate(t, window, b, r, read_weight=read_weight)
         tot.total += c.total
         tot.compactions += c.compactions
         tot.calls += c.calls
@@ -205,7 +209,7 @@ def recommend(
         return rep
 
     base = {
-        label: evaluate(threads, eff_window, b_med * bm, r).total for label, bm, r in SCENARIOS
+        label: evaluate(threads, eff_window, b_med * bm, r, rw).total for label, bm, r, rw in SCENARIOS
     }
     best: Row | None = None
     for w in sorted(set(candidates) | set()):
@@ -214,8 +218,8 @@ def recommend(
         by: dict[str, float] = {}
         thrash = False
         comps = 0
-        for label, bm, r in SCENARIOS:
-            c = evaluate(threads, w, b_med * bm, r)
+        for label, bm, r, rw in SCENARIOS:
+            c = evaluate(threads, w, b_med * bm, r, rw)
             by[label] = 1 - c.total / base[label] if base[label] else 0.0
             if c.compactions / max(1, c.calls) > MAX_COMPACTIONS_PER_CALL:
                 thrash = True
@@ -269,9 +273,15 @@ def per_message_price(ctx: int, rate_pct_per_mtok: float | None) -> float | None
     return rate_pct_per_mtok * (0.1 * ctx + 5 * 1_500) / 1e6
 
 
-def run(root: Path, *, days: float = 30, current_window: int = DEFAULT_WINDOW, now: float | None = None) -> Report:
+def run(
+    root: Path, *, days: float = 30, current_window: int = DEFAULT_WINDOW, now: float | None = None, until: float | None = None
+) -> Report:
+    """`current_window` must be the window that was in effect while the history was
+    recorded. After the governor changes the setting, pass `until` = when it changed
+    (and the previous window), so the replay is compared against what really happened."""
     now = time.time() if now is None else now
-    return recommend(load_threads(root, now - days * 86400), current_window=current_window, days=days)
+    end = until if until is not None else now
+    return recommend(load_threads(root, end - days * 86400, until=until), current_window=current_window, days=days)
 
 
 def as_dict(r: Report) -> dict[str, Any]:
