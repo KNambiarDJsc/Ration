@@ -1,12 +1,13 @@
 <div align="center">
 
-# RATION
+<img src="docs/assets/logo.png" alt="RATION" width="440">
 
 **Spend intelligence where it matters.**
 
 The inference control plane for coding agents.
 
 [![CI](https://github.com/KNambiarDJsc/Ration/actions/workflows/ci.yml/badge.svg)](https://github.com/KNambiarDJsc/Ration/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/KNambiarDJsc/Ration)](https://github.com/KNambiarDJsc/Ration/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Local-first](https://img.shields.io/badge/data-100%25%20local-brightgreen)
@@ -211,6 +212,7 @@ What `ration run` does:
 
 | Command | What it does |
 |---|---|
+| `ration governor [apply\|status\|revert] [--days N]` | Cheapest safe auto-compact window from your own sessions; apply it, check the real before/after, undo it |
 | `ration init` | Detect agents, install hooks + status line (asks first, backs up settings) |
 | `ration handoff [--copy] [--auto on\|off]` | Restart kit from a session + git state, so `/clear` doesn't lose the thread (no model call) |
 | `ration xray [--days N]` | Where your usage went (context size, idle rebuilds, subagents, models) and what to change |
@@ -244,7 +246,8 @@ What `ration run` does:
 
 | Mode | What it does | How |
 |---|---|---|
-| **Observe** (default) | Records sessions, tool calls, tests, subagents, usage; advises | Claude Code command hooks + status line; Codex rollout logs |
+| **Analyze** (no setup) | `governor`, `xray` and `handoff` answer from your past sessions | Reads the session files Claude Code already writes; no hooks, no model calls |
+| **Observe** (after `ration init`) | Records sessions, tool calls, tests, subagents, usage; advises | Claude Code command hooks + status line; Codex rollout logs |
 | **Guard** (`ration guard on`) | Denies wasteful subagent spawns, injects stuck warnings | `PreToolUse` deny on the Agent tool; `additionalContext` after tool calls |
 | **Schedule** (`ration run`) | Chooses and runs, verifies, escalates or stops | `claude -p --output-format stream-json`, `codex exec --json` |
 
@@ -259,14 +262,14 @@ What `ration run` does:
 | 0.65–0.80 | intervene | replan / compact context / restart session / reduce parallelism |
 | > 0.80 | likely stuck | escalate (valuable + budget) · stop (low value) · ask you |
 
-**Scheduler.** Rule-based and explainable: `CHEAP_FIRST` for routine work, `STRONG_FIRST` for risky or hard debugging/architecture/migration, `PREMIUM_RESERVED` gating premium models. No RL, no learned routing in v0.1. Every decision is logged as state/action/outcome for later research.
+**Scheduler.** Rule-based and explainable: `CHEAP_FIRST` for routine work, `STRONG_FIRST` for risky or hard debugging/architecture/migration, `PREMIUM_RESERVED` gating premium models. No RL and no learned routing yet. Every decision is logged as state/action/outcome for later research.
 
 ## Integrations
 
 **Claude Code**
 - Usage comes from official sources: the status line JSON (`rate_limits.five_hour` / `seven_day`, Pro/Max and gateway spend limits) and the `rate_limit_event` in `claude -p` stream output.
 - Hooks are appended next to yours in `~/.claude/settings.json` (backed up first); uninstall removes only RATION's entries. Your existing status line keeps working (RATION wraps and prints it).
-- Hooks are deterministic Python, **fail open** (an internal error never blocks your session), and add roughly 100–200 ms per tool call (`ration doctor` measures yours).
+- Hooks are deterministic Python, **fail open** (an internal error never blocks your session), and add about 140 ms per tool call on the reference Windows machine, 54 ms of which is Python starting up (`ration doctor` measures yours).
 - RATION never edits `CLAUDE.md`, permissions, auth or sandbox settings, never passes `bypassPermissions`, and never uses OAuth tokens or private endpoints.
 
 **Codex**
@@ -295,6 +298,13 @@ weekly_usd = 0
 enabled = true
 receipt_min_percent = 2.0 # only show receipts for turns that cost >= 2% of the 5-hour window
 quiet_minutes = 20        # don't repeat the same kind of tip within this window
+price_tag_min_ctx = 150000     # status line shows the next message's price above this context size (0 = off)
+compact_nudge_tokens = 250000  # suggest /compact when tests go green above this size (0 = off)
+context_tip_tokens = 150000    # suggest a restart kit above this size (0 = off)
+
+[handoff]
+auto = false              # true: after /clear, add the restart kit to the new session
+max_chars = 3000
 
 [guard]
 mode = "observe"          # "guard" lets hooks deny subagent explosions / inject stuck warnings
@@ -323,7 +333,7 @@ Read honestly: in this world RATION delivers about the same task value (differen
 
 ## FAQ
 
-**Does it slow Claude Code down?** Each tool call runs a ~100–200 ms local hook. `ration doctor` measures it on your machine.
+**Does it slow Claude Code down?** Each tool call runs a local hook: a median 140 ms on the reference Windows machine, of which 54 ms is Python starting up. `ration doctor` measures it on yours. `governor`, `xray` and `handoff` need no hooks at all.
 
 **Does it send my code or prompts anywhere?** No. There is no network code at all; everything is local SQLite, and prompt text is never stored.
 
@@ -358,6 +368,8 @@ Known gaps:
 
 ## Roadmap
 
+- Governor results from more machines, and a multi-day before/after on the reference one
+- A PyPI release under a distribution name that isn't taken (`ration` is)
 - Real-task benchmark suite (controlled repos with acceptance checks; SWE-bench-style adapter)
 - Codex lifecycle hooks and live Codex validation
 - Gemini CLI and OpenAI-compatible / local-model adapters

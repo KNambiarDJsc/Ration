@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- Project logo (`docs/assets/logo.png`) at the top of the README.
+
+### Docs
+- README: `ration governor` was missing from the command table; the configuration example now shows the governor-related advisor keys and `[handoff]`; hook latency is the measured figure; the modes table says which commands need no setup.
+
 ### Changed
 - Hooks import the advisor, handoff and transcript modules only on the events that use them. Measured on Windows with Python 3.11, both variants interleaved in one environment over 40 pairs: a tool-call hook takes a median 140 ms instead of 166 ms (25 ms less in the median pair, faster in 38 of 40). About 54 ms of either is interpreter start.
 
