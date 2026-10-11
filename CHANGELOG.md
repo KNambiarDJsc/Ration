@@ -2,7 +2,15 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-10-11
+
+### Verified in real Claude Code sessions (2.1.296)
+- Resume-cost tip: predicted a 43k-token rebuild; Claude Code billed 42,674.
+- Compact nudge at a green-test boundary; restart kit delivered to the new session after `/clear`.
+- Auto-compaction fires at a configured window; a 100k window came back at 120k (thrash is real); the compaction request is billed as fresh input and is absent from the transcript. The governor's cost model now uses these measurements.
+
+### Fixed
+- Governor report used the new setting as the baseline for history recorded under the old one.
 
 ### Added
 - **`ration governor`**: replays your real sessions under candidate auto-compact windows with a cost model fitted to your own compactions, recommends the window that holds up under pessimistic assumptions (never one that thrashes), and can `apply`/`revert` the official `autoCompactWindow` setting. `ration governor status` verifies the realized before/after. Status-line price tag (`ctx 312k · msg ≈0.2%`) and a "good moment to compact" nudge at green-test boundaries. Design: `docs/design/governor.md`.

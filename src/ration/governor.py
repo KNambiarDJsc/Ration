@@ -37,12 +37,15 @@ DEFAULT_B = 85_000  # median post-compaction context measured on a real machine
 SUMMARY_OUT = 15_000
 CANDIDATES = (150_000, 200_000, 250_000, 300_000, 400_000, 500_000, 700_000)
 # (label, B multiplier, tokens re-fetched after each compaction, weight of the compaction
-#  request's read of the conversation: 0.1 if it hits the cache, 1.25 if it is a full rebuild)
+#  request's read of the conversation).
+# Live measurement (Claude Code 2.1.296, haiku, 100k window): the compaction request was
+# billed as fresh input (~1.0 per token, not the 0.1 cache-read rate), and it is NOT recorded
+# in the session transcript. The post-compaction context was 120k (recent messages are
+# preserved), i.e. ~1.4x the 85k median seen at large windows; "pessimistic" covers that.
 SCENARIOS = (
     ("optimistic", 0.8, 25_000, 0.1),
-    ("measured", 1.0, 25_000, 0.1),
-    ("heavy re-fetch", 1.0, 75_000, 0.1),
-    ("uncached compaction", 1.0, 25_000, 1.25),
+    ("measured", 1.0, 25_000, 1.0),
+    ("heavy re-fetch", 1.0, 75_000, 1.0),
     ("pessimistic", 1.5, 100_000, 1.25),
 )
 MAX_COMPACTIONS_PER_CALL = 1 / 12  # more often than this is thrashing
@@ -145,8 +148,18 @@ def growth_series(calls: list[Call]) -> list[float | None]:
 
 # ---- simulation ---------------------------------------------------------------------------
 def simulate(
-    calls: list[Call], window: int, b: float, r: float, s: float = SUMMARY_OUT, ttl: float = TTL_S, read_weight: float = 0.1
+    calls: list[Call],
+    window: int,
+    b: float,
+    r: float,
+    s: float = SUMMARY_OUT,
+    ttl: float = TTL_S,
+    read_weight: float = 1.0,
+    hidden_request: bool = True,
 ) -> Cost:
+    """`hidden_request=False` leaves out the compaction request itself (its read of the
+    conversation and the summary output). Transcripts don't record that request, so the
+    model check against real transcript totals must leave it out too."""
     ds = growth_series(calls)
     pos = [d for d in ds[1:] if d is not None and d > 0]
     typical = statistics.median(pos) if pos else 1500.0
@@ -164,15 +177,19 @@ def simulate(
             ctx += max(d, 0.0)
         if ctx >= window:
             n += 1
-            cost += read_weight * ctx + 5 * s + 1.25 * b + 1.25 * r
+            if hidden_request:
+                cost += read_weight * ctx + 5 * s
+            cost += 1.25 * b + 1.25 * r
             ctx = b + r
     return Cost(cost, n, len(calls))
 
 
-def evaluate(threads: list[list[Call]], window: int, b: float, r: float, read_weight: float = 0.1) -> Cost:
+def evaluate(
+    threads: list[list[Call]], window: int, b: float, r: float, read_weight: float = 1.0, hidden_request: bool = True
+) -> Cost:
     tot = Cost()
     for t in threads:
-        c = simulate(t, window, b, r, read_weight=read_weight)
+        c = simulate(t, window, b, r, read_weight=read_weight, hidden_request=hidden_request)
         tot.total += c.total
         tot.compactions += c.compactions
         tot.calls += c.calls
@@ -193,7 +210,8 @@ def recommend(
     real = sum(real_cost(t) for t in threads)
     # If sessions never get anywhere near the window, the setting is moot.
     eff_window = current_window if peak >= 0.5 * current_window else max(current_window, peak)
-    base_measured = evaluate(threads, eff_window, b_med, 25_000).total if threads else 0.0
+    # Compare like with like: transcripts don't contain the compaction request.
+    base_measured = evaluate(threads, eff_window, b_med, 25_000, hidden_request=False).total if threads else 0.0
     rep = Report(
         sessions=len(threads), calls=calls, days=days, current_window=current_window, peak_ctx=peak, real_total=real,
         model_error=(base_measured / real - 1) if real else 0.0, post_compaction_b=b_med, b_samples=b_n,

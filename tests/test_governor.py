@@ -142,12 +142,18 @@ def test_after_apply_the_replay_still_uses_the_window_history_ran_at(tmp_path, c
     assert "RATION changed it" in out and "your setting" in out
 
 
-def test_recommendation_survives_an_uncached_compaction_request(tmp_path):
-    labels = [s[0] for s in governor.SCENARIOS]
-    assert "uncached compaction" in labels and "pessimistic" in labels
-    rep = governor.run(projects(tmp_path), days=1, now=NOW)
+def test_compaction_request_is_priced_as_fresh_input(tmp_path):
+    """Live-measured: the compaction request is billed as uncached input and is not in
+    the transcript. The measured case must price it at ~1.0, the pessimistic one higher."""
+    sc = {s[0]: s for s in governor.SCENARIOS}
+    assert sc["measured"][3] == 1.0 and sc["pessimistic"][3] >= 1.0 and sc["optimistic"][3] == 0.1
+    threads = governor.load_threads(projects(tmp_path), 0)
+    with_req = governor.evaluate(threads, 300_000, 85_000, 25_000).total
+    without = governor.evaluate(threads, 300_000, 85_000, 25_000, hidden_request=False).total
+    assert with_req > without  # the hidden request costs something
+    rep = governor.run(projects(tmp_path / "b"), days=1, now=NOW)
     best = next(r for r in rep.rows if r.window == rep.recommended)
-    assert best.by_scenario["uncached compaction"] > 0 and best.by_scenario["pessimistic"] >= governor.MIN_WORTHWHILE_SAVING
+    assert best.by_scenario["pessimistic"] >= governor.MIN_WORTHWHILE_SAVING
 
 
 def test_report_cli_runs_on_empty_history(tmp_path, capsys):
@@ -167,13 +173,13 @@ def test_price_tag_appears_only_when_context_is_large(store, cfg):
     big = {"context_window": {"current_usage": {"input_tokens": 5, "cache_creation_input_tokens": 2_000, "cache_read_input_tokens": 800_000}}}
     assert statusline.advisor.price_segment(small, store, cfg) is None
     tag = advisor.price_segment(big, store, cfg)
-    assert tag.startswith("ctx 802k") and "msg ≈" in tag
+    assert tag.startswith("802k in context") and "next msg ≈" in tag and "of 5h" in tag
     assert advisor.message_price(800_000, 6.0) > 10 * advisor.message_price(80_000, 6.0) * 0.5
 
 
 def test_price_tag_without_calibration_still_shows_context(store, cfg):
     big = {"context_window": {"current_usage": {"input_tokens": 5, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 400_000}}}
-    assert advisor.price_segment(big, store, cfg) == "ctx 400k"
+    assert advisor.price_segment(big, store, cfg) == "400k in context"
 
 
 def stop_payload(tpath):

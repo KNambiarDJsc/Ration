@@ -13,45 +13,29 @@ The inference control plane for coding agents.
 
 </div>
 
-> Your coding agents have a spending problem.
+> Long sessions are where your quota goes.
 
-You run Claude Code (and Codex) all day: long sessions, subagents, retries, test loops. Then you hit your 5-hour limit mid-task with no warning, and you never learn which turn burned it.
+Every message you send re-reads your whole conversation. At 900k tokens of context, one message costs about **10x** what it does at 90k, and Claude Code's default lets context grow to ~1M before it compacts. RATION shows where your usage went, finds the one official setting that fixes most of it, and makes starting fresh painless. Everything runs locally and reads only what Claude Code already writes to disk.
 
-RATION sits **above** your coding agents. It watches what they actually do, reads the official usage numbers they already report, and tells you **when to spend, save, escalate or stop**: in your Claude Code session, in your status line, and in a scheduler that can run tasks for you.
+## The 60-second version
 
-<p align="center"><img src="docs/assets/watch.svg" alt="ration watch: one healthy session, one session looping on the same failing test, flagged likely_stuck with reasons" width="760"></p>
+Requires Python 3.11+ and [Claude Code](https://code.claude.com). Install from GitHub. **Do not `pip install ration`: that name on PyPI is an unrelated package.**
 
-## What you get
+```bash
+uv tool install git+https://github.com/KNambiarDJsc/Ration   # or: pipx install git+https://github.com/KNambiarDJsc/Ration
 
-- **An X-ray of where your quota went.** Claude shows a percentage; RATION shows *why*: which sessions, which habits, and what to change. It works on day one from the session files already on your disk. See below.
-- **Warnings before you hit the wall.** *"At this pace you'll hit your 5-hour limit in ~40m (it resets in 2h00m)."* Measured from your real pace, in Claude Code and in your status line.
-- **The right model for the task you just typed.** *"This looks like a small edit: haiku should be enough (you're on opus). `/model haiku` and `/effort low` save premium quota."* It never switches anything for you.
-- **Receipts.** *"That turn used 7% of your 5-hour window (3 subagents, 41 tool calls)."* Exact token counts from your session files.
-- **Stuck detection.** Same test failing six times, the same commands in a loop, files re-read with no change: scored, explained, and (if you opt in) interrupted.
-- **A scheduler that starts cheap and escalates only on verified progress.** `ration run` checks your tests before spending anything, picks model/effort/retries from your real budget, and stops wasting quota on loops.
+ration governor    # the cheapest safe auto-compact window for how you work, from your own sessions
+ration xray        # where the rest of your usage went, and what to change
+ration handoff     # a restart kit, so /clear doesn't lose the thread
+```
+
+Those three need no setup, change nothing, and make no model calls. For in-session tips, a status line and live stuck detection:
+
+```bash
+ration init        # asks before changing anything, backs up your settings
+```
 
 Its objective is not "minimize tokens". It is **maximize verified useful engineering work per unit of scarce inference.**
-
-## Quickstart
-
-Requires Python 3.11+ and [Claude Code](https://code.claude.com). Not on PyPI yet; install from GitHub:
-
-```bash
-uv tool install git+https://github.com/KNambiarDJsc/Ration
-# or: pipx install git+https://github.com/KNambiarDJsc/Ration
-
-ration init      # detects Claude Code / Codex, asks before changing anything, backs up settings
-```
-
-Then start a **new** `claude` session and work as usual. RATION observes, and speaks up only when it matters.
-
-```bash
-ration status    # 5-hour / weekly usage, burn pressure, reset forecast
-ration watch     # live progress + stuck detection for running sessions
-ration doctor    # check hooks, status line, latency
-```
-
-<p align="center"><img src="docs/assets/status.svg" alt="ration status: 5-hour window 58% used with burn pressure 3.44 HIGH and a projection to run out 2h24m before reset" width="760"></p>
 
 ## The big lever: `ration governor`
 
@@ -66,20 +50,26 @@ After a compaction your context lands near 85k.
 One message costs about 0.53% of your 5-hour window at 962k context, vs 0.09% at 100k.
 
  window │ saves (measured) │ saves (worst case) │ compactions
- 150k   │ +47%             │ compacts too often │ 68
- 200k   │ +50%             │ compacts too often │ 29
- 250k   │ +48%             │ -9%                │ 18
- 300k   │ +44%             │ +23%               │ 14
- 400k   │ +37%             │ +26%               │ 7    ◀ recommended
- 500k   │ +31%             │ +24%               │ 6
+ 150k   │ +38%             │ compacts too often │ 69
+ 200k   │ +45%             │ compacts too often │ 30
+ 250k   │ +45%             │ -9%                │ 18
+ 300k   │ +41%             │ +23%               │ 14
+ 400k   │ +35%             │ +26%               │ 7    ◀ recommended
+ 500k   │ +30%             │ +24%               │ 6
 Model check: replaying your current window reproduces your real usage to within 1%
 
-Recommendation: 400k  est. saving 26% to 37% of your usage
+Recommendation: 400k  est. saving 26% to 35% of your usage
 ```
 
 It picks the window that saves the most under *pessimistic* assumptions, not the theoretical optimum, because the cheapest window in theory compacts every few calls if the post-compaction size is larger than measured. If you don't have long sessions, it says "no change recommended".
 
-> **Read this before applying.** These savings are a replay of past sessions, not a measurement of the future, and Claude Code's own `/autocompact` text says the `auto` window (1M on current models) is "strongly recommended for the best cost and performance" and that overriding it "may result in high token usage, especially when resuming long sessions". The worst case above already prices an uncached compaction request, a 1.5x larger post-compaction context and 100k tokens re-fetched each time, and the first message into an existing session above the new window will trigger one large compaction. Use `ration governor status` to see what actually happened on your machine, and `ration governor revert` if it didn't pay off.
+**What a live test showed** (Claude Code 2.1.296, haiku, window forced to 100k):
+
+- Auto-compaction fired at the configured window, so the setting does what it says.
+- The context came back at **120k, above the 100k window**: Claude Code preserves the most recent messages, and those were large. A window that small would compact again and again. This is the failure the "compacts too often" check exists to prevent.
+- The compaction request itself was billed as about **118k fresh, uncached input tokens**, not at the cheap cached rate, and it does not appear in the session transcript. The "measured" column prices it that way.
+
+> **Read this before applying.** The savings are a replay of past sessions, not a measurement of the future. Claude Code's own `/autocompact` text says the `auto` window (1M on current models) is "strongly recommended for the best cost and performance" and that overriding it "may result in high token usage, especially when resuming long sessions", and the live test above shows why a window that is too small backfires. The worst case already assumes a 1.5x larger post-compaction context, 100k tokens re-fetched each time and a fully uncached compaction request. The first message into an existing session above the new window triggers one large compaction. Use `ration governor status` to see what actually happened on your machine, and `ration governor revert` if it didn't pay off.
 
 ```bash
 ration governor apply      # writes autoCompactWindow (backed up); or /autocompact 400k in Claude Code
@@ -87,7 +77,7 @@ ration governor status     # real before/after: usage per call, average context,
 ration governor revert     # restore your previous setting
 ```
 
-In the session you also get a price tag in the status line once context is large (`ctx 312k · msg ≈0.2%`) and a nudge to compact at a natural boundary (tests just went green) rather than mid-task. Design, model and limits: [docs/design/governor.md](docs/design/governor.md).
+In the session you also get a price tag in the status line once context is large (`782k in context · next msg ≈0.5% of 5h`) and a nudge to compact at a natural boundary (tests just went green) rather than mid-task. Design, model and limits: [docs/design/governor.md](docs/design/governor.md).
 
 ## Where did my quota go? `ration xray`
 
@@ -208,6 +198,14 @@ What `ration run` does:
 2. Picks provider, model class, effort, max turns, retries and subagent allowance from task difficulty/risk/value and your **real** budget, and records every reason.
 3. Runs the agent (`claude -p --output-format stream-json`, or `codex exec --json`), watching for stuck loops; a likely-stuck run is interrupted.
 4. Verifies with your checks. No improvement → escalate one tier (cheap → strong → premium, premium only when justified). Progress → keep the model. Permission wall → stop and tell you why instead of retrying.
+
+## Watching usage and sessions
+
+`ration status` shows each usage window, how fast you're burning it, and whether you'll run out before it resets. `ration watch` shows live sessions with a progress score and a stuck score, with the reasons.
+
+<p align="center"><img src="docs/assets/status.svg" alt="ration status: 5-hour window 58% used with burn pressure 3.44 HIGH and a projection to run out 2h24m before reset" width="760"></p>
+
+<p align="center"><img src="docs/assets/watch.svg" alt="ration watch: one healthy session, one session looping on the same failing test, flagged likely_stuck with reasons" width="760"></p>
 
 ## Commands
 
@@ -347,7 +345,13 @@ Your data is in `~/.config/ration/` (delete it, or `ration privacy --purge` firs
 
 ## Project status
 
-**Alpha (v0.1).** Built and tested on Windows with Claude Code 2.1.296, including live end-to-end runs; CI runs the test suite on Linux, macOS and Windows. Known gaps:
+**Alpha (v0.2).** Built and tested on Windows with Claude Code 2.1.296; CI runs the test suite on Linux, macOS and Windows.
+
+Seen working in real Claude Code sessions: hooks and status line, usage capture, `ration run` fixing a real failing-test repo, model/limit tips, the resume-cost tip (it predicted a 43k-token rebuild; Claude Code then billed 42,674), the compact nudge at a green-test boundary, the restart kit carried into a new session after `/clear`, and auto-compaction firing at a configured window.
+
+Known gaps:
+- **The governor's saving is an estimate.** It is a replay of one heavy user's history. The mechanics are verified live; a multi-day before/after is not yet in.
+- **Compaction requests are invisible to RATION.** Claude Code bills them but doesn't write them to the session transcript, so RATION's per-turn token counts and `xray` shares leave them out (a few percent of usage on the reference machine).
 - The **Codex adapter** follows the open-source `codex-rs` protocol and is unit-tested against its formats, but hasn't been run against a live Codex install yet.
 - Session transcripts are an internal Claude Code format: read defensively, verified on 2.1.296, may need updates as Claude Code evolves.
 - Task difficulty is keyword heuristics corrected by your own history; no ML.

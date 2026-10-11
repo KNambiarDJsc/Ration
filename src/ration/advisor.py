@@ -542,7 +542,7 @@ def price_segment(payload: dict[str, Any], store: Any, cfg: dict[str, Any], now:
     if not limit or ctx < limit:
         return None
     price = message_price(ctx, any_rate(store, time.time() if now is None else now))
-    return f"ctx {fmt_tok(ctx)}" + (f" · msg ≈{price:.1f}%" if price and price >= 0.05 else "")
+    return f"{fmt_tok(ctx)} in context" + (f" · next msg ≈{price:.1f}% of 5h" if price and price >= 0.05 else "")
 
 
 def compact_nudge(store: Any, sid: str, turn: list[AgentEvent], tpath: str | None, cfg: dict[str, Any], now: float) -> str | None:

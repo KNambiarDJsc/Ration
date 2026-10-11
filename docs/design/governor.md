@@ -38,17 +38,31 @@ compaction (ctx ≥ W) = 0.1·ctx + 5·S + 1.25·B ; then ctx = B + R
 
 Why a sensible window is *not* "as small as possible": if `B + R` approaches `W`, Claude compacts almost every call and cost explodes (we see 4x–6x in simulation). The governor therefore requires a window to be **non-thrashing and still worthwhile under pessimistic parameters**, and picks the best *worst case*, preferring the larger window on ties.
 
-Every candidate is scored under five assumption sets:
+Every candidate is scored under four assumption sets:
 
 | Set | Post-compaction size | Re-fetched after each compaction | Compaction request reads the conversation at |
 |---|---|---|---|
 | optimistic | 0.8 x measured | 25k | cache-read rate (0.1) |
-| measured | measured | 25k | 0.1 |
-| heavy re-fetch | measured | 75k | 0.1 |
-| uncached compaction | measured | 25k | full rebuild rate (1.25) |
-| pessimistic | 1.5 x measured | 100k | 1.25 |
+| measured | measured | 25k | fresh-input rate (1.0), as measured live |
+| heavy re-fetch | measured | 75k | 1.0 |
+| pessimistic | 1.5 x measured | 100k | full rebuild rate (1.25) |
 
-On the reference machine 400k saves 37% (measured) and 26% (pessimistic); 250k saves 48% measured but *loses* 9% in the pessimistic set, so it is rejected.
+On the reference machine 400k saves 35% (measured) and 26% (pessimistic); 250k saves 45% measured but *loses* 9% in the pessimistic set, so it is rejected.
+
+### Live verification (2026-10-11, Claude Code 2.1.296)
+
+| Question | Test | Result |
+|---|---|---|
+| Does the setting take effect? | `ration governor apply`, then `/autocompact` | "400k tokens (from settings)" |
+| What is `auto`? | `--autocompact auto` + `/autocompact` per model | 1M for Haiku 5.5, Sonnet 5.5, Opus 5.5 |
+| Does compaction fire at the window? | haiku, `--autocompact 100000`, five ~20k-token reads | `compact_boundary` with `trigger: auto`, 202,785 → 53,087 tokens |
+| Where does context land afterwards? | first call after that compaction | 120,580 tokens, *above* the 100k window (recent messages are preserved) |
+| How is the compaction request billed? | session `modelUsage` minus the per-call usage in the transcript | ~117.7k fresh input + 37k cache read + 2.5k output; **not in the transcript** |
+| How long does a compaction take? | `compactMetadata.durationMs` in real sessions | 13 s at 200k; 130–224 s at 400k–935k |
+
+Consequences: the "measured" set prices the compaction request at 1.0 per token; the thrash guard is justified by an observed case, not a hypothetical; and the model check compares against transcript totals with the compaction request left out, because transcripts don't contain it.
+
+Claude Code writes a `compact_boundary` system record for every compaction (`trigger`, `preTokens`, `postTokens`, `durationMs`). The governor currently infers compactions from context drops; reading these records directly is the obvious next refinement, and would also separate automatic from manual compactions.
 
 The replay must be compared against the window the history was actually recorded under. After `apply`, the report replays only the history from before the change, at the previous window; otherwise the model check is meaningless (this was a real bug, caught the first time the setting was applied).
 
@@ -97,7 +111,7 @@ Surfaces:
 
 | Phase | What | Expected value (measured basis) |
 |---|---|---|
-| Now | Window recommendation, price tag, boundary nudge, verifier | 26–37% of usage for long-session users (this machine, simulated, unverified live) |
+| Now | Window recommendation, price tag, boundary nudge, verifier | 26–35% of usage for long-session users (this machine; mechanics verified live, the saving itself still a replay) |
 | Next | Quality guard + automatic backoff; per-model windows; per-project windows | Safety |
 | Next | Idle-gap policy: at cache expiry, fresh-start or compact *before* paying the rebuild | Part of the ~8% idle rebuild share |
 | Later | Delegation gate on native subagents (Shunt's idea, no external service): route bulk reads/searches to a cheap-model subagent, return a pointer + summary | ~2% on this workload; higher for 200k-window users (to be measured) |
@@ -106,7 +120,8 @@ Surfaces:
 ## 8. Limits and what is unproven
 
 - **One machine, one heavy user.** 62% of its usage was a single session. The saving range will be smaller for people who already `/clear` often or use 200k-window models (where the default is already near-optimal; the tool then says "no change").
-- **`B` is measured from few events** (12 compactions across two sessions). Below 3 observed compactions the governor uses 85k and says so.
+- **`B` is measured from few events** (12 compactions across two sessions, 65k–125k, plus one live test at 120k). Below 3 observed compactions the governor uses 85k and says so.
+- **Compaction requests are not in transcripts**, so everything RATION derives from transcripts (per-turn tokens, `xray` shares, the "real usage" side of the model check) leaves them out. The replay adds them back at the live-measured rate.
 - **Calibration is thin** (a handful of turns): the % price tags are approximate until more turns are observed.
 - **Quality is not measured.** Compacting earlier summarizes older detail sooner. The model counts re-fetch as a token cost (R) but not as lower answer quality. This is why the recommendation favors larger windows on ties, and why handoff exists for lossless restarts.
 - **Subscription limits may weight tokens differently** from the published price ratios the cost model uses. Calibration on the 5-hour meter agrees in direction; absolute % per message should be read as an estimate.
