@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Changed
-- Hooks import the advisor, handoff and transcript modules only on the events that use them. Measured on Windows with Python 3.11: a tool-call hook does about 76 ms of work instead of about 109 ms, on top of a 50 ms interpreter start.
+- Hooks import the advisor, handoff and transcript modules only on the events that use them. Measured on Windows with Python 3.11, both variants interleaved in one environment over 40 pairs: a tool-call hook takes a median 140 ms instead of 166 ms (25 ms less in the median pair, faster in 38 of 40). About 54 ms of either is interpreter start.
 
 ### Fixed
 - A hook payload that starts with a UTF-8 byte order mark (a PowerShell pipe adds one) was logged as a hook error and dropped.
