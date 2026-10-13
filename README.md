@@ -313,7 +313,7 @@ How it stays safe:
 - Hooks are appended next to yours in `~/.claude/settings.json` (backed up first); uninstall removes only RATION's entries. Your existing status line keeps working (RATION wraps and prints it).
 - Hooks are deterministic Python, **fail open** (an internal error never blocks your session), and add about 140 ms per tool call on the reference Windows machine, 54 ms of which is Python starting up (`ration doctor` measures yours).
 - RATION never edits `CLAUDE.md`, permissions, auth or sandbox settings, never passes `bypassPermissions`, and never uses OAuth tokens or private endpoints.
-- Optional plugin with slash commands (`/ration:autopilot`, `/ration:report`, `/ration:status`, `/ration:goal`) that call the installed CLI: `/plugin install ration --marketplace KNambiarDJsc/Ration`. It adds no hooks; `ration init` still installs those and the status line, which a plugin cannot set.
+- Optional plugin with slash commands (`/ration:autopilot`, `/ration:report`, `/ration:status`, `/ration:goal`) that call the installed CLI: `/plugin marketplace add KNambiarDJsc/Ration`, then `/plugin install ration@ration`. It adds no hooks; `ration init` still installs those and the status line, which a plugin cannot set.
 
 **Codex**
 - Usage from Codex's own rollout logs (`$CODEX_HOME/sessions/**/rollout-*.jsonl`, server-reported `rate_limits`), read-only.
