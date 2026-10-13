@@ -56,6 +56,35 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "receipt_min_mtokens": 1.0,  # weighted million tokens, when no % or $ is known
         # Don't repeat the same kind of tip in a session within this many minutes.
         "quiet_minutes": 20,
+        # After a turn, point at `ration autopilot --dry-run` when the short window is
+        # mostly unused, resets soon and the week is healthy. At most once per window.
+        "autopilot_tip": True,
+    },
+    "autopilot": {
+        # Never let optional, unattended work take the weekly window below this.
+        "weekly_reserve_percent": 40,
+        # Leave this much of the 5-hour window for when you come back.
+        "window_reserve_percent": 10,
+        # One run may use at most this much of the weekly window, whatever else is free.
+        "max_weekly_percent_per_run": 10,
+        # Tasks scoring below this (0..100) are not worth unattended quota.
+        "min_score": 50,
+        "max_tasks": 5,
+        "max_runtime_minutes": 180,
+        "task_timeout_minutes": 30,
+        "check_timeout_seconds": 900,
+        "probe_timeout_seconds": 300,
+        # Don't retry a task that was not accepted for this many days.
+        "cooldown_days": 7,
+        # Run in each fresh worktree before its checks (e.g. "npm ci"). Empty = nothing.
+        "setup_command": "",
+        # Override the detected commands. Empty = detect from the project.
+        "test_command": "",
+        "lint_command": "",
+        "typecheck_command": "",
+        # When the in-session tip may appear.
+        "suggest_reset_within_hours": 2.0,
+        "suggest_min_remaining_percent": 50,
     },
     "handoff": {
         # When true, `/clear` carries a restart kit into the new session automatically.

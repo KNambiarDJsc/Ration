@@ -53,6 +53,7 @@ TYPE_LABEL = {
 }
 EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"]
 USE_IT_QUIET_S = 6 * 3600
+AUTOPILOT_QUIET_S = 5 * 3600  # at most once per 5-hour window, across sessions
 HISTORY_DAYS = 60
 MIN_HISTORY = 4
 MIN_CALIBRATION = 3
@@ -314,6 +315,20 @@ def stuck_tip(events: list[AgentEvent]) -> Tip | None:
         f"this session looks stuck ({why}). A fresh session (/clear) with a 3-line summary of what failed "
         "is often cheaper than continuing, or try a different approach instead of repeating this one.",
     )
+
+
+def autopilot_tip(store: Any, cfg: dict[str, Any], now: float) -> str | None:
+    """At the end of a turn: most of the short window is unused, it resets soon and the
+    week is healthy. Points at the dry run; autopilot itself only ever starts when asked."""
+    adv = cfg["advisor"]
+    if not (adv["enabled"] and adv.get("autopilot_tip", True)):
+        return None
+    from .autopilot import budget as autopilot_budget
+
+    msg = autopilot_budget.suggestion(provider_budgets(store, cfg, now=now).get(PROVIDER), cfg)
+    if not msg or store.recent_advice("autopilot", now - AUTOPILOT_QUIET_S):
+        return None
+    return f"RATION: {msg}"
 
 
 # ---- metering + calibration --------------------------------------------------
@@ -595,6 +610,10 @@ def on_stop(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: float
     nudge = compact_nudge(store, sid, turn, payload.get("transcript_path"), cfg, now)
     if nudge:
         events.append(AgentEvent(PROVIDER, sid, EventType.ADVICE, {"kind": "compact-nudge"}, timestamp=now))
+    auto = autopilot_tip(store, cfg, now)
+    if auto:
+        events.append(AgentEvent(PROVIDER, sid, EventType.ADVICE, {"kind": "autopilot"}, timestamp=now))
+        nudge = "\n".join(m for m in (nudge, auto) if m)
     if not (adv["enabled"] and adv["turn_receipts"]):
         return events, nudge
 

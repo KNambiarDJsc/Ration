@@ -50,14 +50,16 @@ class RunReport:
 Hook = Callable[[str, Any], None]
 
 
-def run_checks(checks: list[str], cwd: str, session_id: str, run_id: str, task_id: str, provider: str = "ration") -> tuple[int, list[AgentEvent], str]:
+def run_checks(
+    checks: list[str], cwd: str, session_id: str, run_id: str, task_id: str, provider: str = "ration", env: dict[str, str] | None = None
+) -> tuple[int, list[AgentEvent], str]:
     passed = 0
     events: list[AgentEvent] = []
     tail = ""
     for cmd in checks:
         argv = shell_argv(cmd)
         try:
-            r = subprocess.run(argv, cwd=cwd, capture_output=True, timeout=900, shell=isinstance(argv, str), text=True, encoding="utf-8", errors="replace")
+            r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=900, shell=isinstance(argv, str), text=True, encoding="utf-8", errors="replace")
             out, ok = (r.stdout or "") + (r.stderr or ""), r.returncode == 0
         except (OSError, subprocess.SubprocessError) as e:
             out, ok = str(e), False
@@ -107,6 +109,9 @@ def execute(
     permission_mode: str | None = None,
     on: Hook | None = None,
     budgets_fn: Callable[[], dict[str, ProviderBudget]] | None = None,
+    check_env: dict[str, str] | None = None,
+    max_attempts: int | None = None,
+    baseline_gate: bool = True,
 ) -> RunReport:
     on = on or (lambda kind, data: None)
     t0 = time.time()
@@ -125,9 +130,11 @@ def execute(
 
     # Baseline: run the acceptance checks once before spending anything. If they
     # already pass there is nothing to do; otherwise progress is measured against it.
+    # baseline_gate=False: the caller measured the baseline itself and the checks guard
+    # the work rather than define it (autopilot adds tests to a green suite).
     last_score: float | None = None
-    if task.acceptance_checks and not dry_run:
-        b_passed, b_events, _ = run_checks(task.acceptance_checks, cwd, "baseline", "baseline", task.id)
+    if task.acceptance_checks and not dry_run and baseline_gate:
+        b_passed, b_events, _ = run_checks(task.acceptance_checks, cwd, "baseline", "baseline", task.id, env=check_env)
         store.add_events(b_events)
         last_score = check_score(b_events, b_passed, len(task.acceptance_checks))
         on("baseline", b_events)
@@ -154,6 +161,9 @@ def execute(
         on("decision", policy)
         if policy.stop:
             report.stopped_reason = policy.reasons
+            break
+        if max_attempts is not None and len(report.attempts) >= max_attempts:
+            report.stopped_reason = ["max_attempts_reached"]  # caller's cap (e.g. autopilot), below the retry budget
             break
         if dry_run:
             store.set_task_status(task.id, "planned")
@@ -202,7 +212,7 @@ def execute(
         sid = result.session_id or run_id
         verified_velocity = 0.0
         if task.acceptance_checks:
-            passed, check_events, tail = run_checks(task.acceptance_checks, cwd, sid, run_id, task.id, provider=policy.provider)
+            passed, check_events, tail = run_checks(task.acceptance_checks, cwd, sid, run_id, task.id, provider=policy.provider, env=check_env)
             for e in check_events:
                 on_event(e)
             total = len(task.acceptance_checks)

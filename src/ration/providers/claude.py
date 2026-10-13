@@ -55,6 +55,7 @@ HELP_FLAGS = {
     "max_budget_usd": "--max-budget-usd",
     "agents": "--agents",
     "mcp_config": "--mcp-config",
+    "disallowed_tools": "--disallowedTools",
 }
 
 
@@ -214,7 +215,21 @@ class ClaudeProvider:
             argv += ["--effort", str(policy.effort)]
         if permission_mode and permission_mode != "bypassPermissions" and f.get("permission_mode"):
             argv += ["--permission-mode", permission_mode]
+        # Extra denials only ever narrow what the session may do (autopilot denies pushes, deploys...).
+        deny = [str(t) for t in self.cfg["claude"].get("disallowed_tools") or []]
+        if deny and f.get("disallowed_tools"):
+            argv += ["--disallowedTools", ", ".join(deny)]  # one quoted argument: safe through a Windows .cmd shim
         return argv
+
+    @staticmethod
+    def prompt_on_stdin(argv: list[str], prompt: str) -> tuple[list[str], str | None]:
+        """An npm install of Claude Code on Windows is a `.cmd` shim, and cmd.exe ends a
+        command line at the first newline: a multi-line prompt would be cut short and
+        every flag after it lost. For a batch shim, send the prompt on stdin instead."""
+        shim = argv[0].lower().endswith((".cmd", ".bat"))
+        if os.name == "nt" and shim and argv[1:3] == ["-p", prompt]:
+            return argv[:2] + argv[3:], prompt
+        return argv, None
 
     def run(
         self,
@@ -246,7 +261,8 @@ class ClaudeProvider:
         # RATION_RUN_ID tells RATION's own hooks inside this child session to stay out:
         # the orchestrator already sees everything through the stream.
         env = dict(os.environ, RATION_RUN_ID=run_id)
-        rc, cancelled, err = stream_lines(self.build_argv(prompt, policy, permission_mode), cwd, on_line, env=env)
+        argv, stdin_text = self.prompt_on_stdin(self.build_argv(prompt, policy, permission_mode), prompt)
+        rc, cancelled, err = stream_lines(argv, cwd, on_line, stdin_text=stdin_text, env=env)
         r = parser.result or {}
         if not parser.permission_denials and r.get("permission_denials"):
             parser.permission_denials = ["denied"] * len(r["permission_denials"])

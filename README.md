@@ -200,6 +200,46 @@ What `ration run` does:
 3. Runs the agent (`claude -p --output-format stream-json`, or `codex exec --json`), watching for stuck loops; a likely-stuck run is interrupted.
 4. Verifies with your checks. No improvement → escalate one tier (cheap → strong → premium, premium only when justified). Progress → keep the model. Permission wall → stop and tell you why instead of retrying.
 
+## Idle capacity: `ration autopilot`
+
+You are about to step away, most of your 5-hour window is unused, and it resets in two hours. Autopilot (also `ration nightshift`) converts idle inference you chose to make available into verified, useful work. **It does not exist to use up quota.** It protects the weekly window first: if the week is tight it does nothing, however much of the short window is free, and if there is no worthwhile work it stops.
+
+```bash
+ration goal set "Ship the MVP" --priority "finish authentication" --constraint "don't change the database schema"   # optional
+
+ration autopilot --dry-run                 # the plan and the reasons; starts no agent, changes nothing
+ration autopilot --mode safe --max-tasks 3 # tests, lint and type fixes, docs, small local fixes. Asks before starting
+ration autopilot status                    # from another terminal; also: ration autopilot stop
+ration autopilot report                    # what was accepted, what was discarded and why, and what to review
+```
+
+A real run on this repository (2026-10-13, Claude Code 2.1.296; the scheduler chose haiku at low effort):
+
+```text
+▶ Add tests for scripts/gen_readme_assets.py  (score 74)
+    claude · cheap model · effort low
+  ✓ SUCCESS  7 more passing tests (133 passed, 0 failed → 140 passed, 0 failed)
+
+Combined result (everything accepted, verified together in a clean checkout):
+  base commit  `python -m pytest -p no:cacheprovider`: 133 passing, 0 failing
+  combined     `python -m pytest -p no:cacheprovider`: 140 passing, 0 failing
+  OK: no check is worse than at the base commit
+
+To review (nothing was merged into your branches):
+  git diff naman-development...ration/auto/20261013-014624-3421/accepted    # all accepted changes, 1 task(s)
+```
+
+An earlier attempt at the same task wrote tests of which two failed; it was reported as `REGRESSION` and discarded, with the diff kept for inspection.
+
+How it stays safe:
+
+- **Tasks come from local signals** (failing tests, lint, TODOs, untested modules, your backlog files, tasks you define), never from asking a model what to do next. Text in the repository is treated as data: a backlog line that reads like an instruction to the agent is rejected.
+- **Every task works in its own git worktree**, starting from everything accepted before it, and is compared with a baseline. Better and nothing worse is committed to a `ration/auto/<run>/…` branch; anything else is discarded with the reason. At the end, everything accepted is verified again together.
+- **Your checkout is never written to.** Nothing is merged into your branches, and nothing is pushed or deployed: git network access is switched off for the agent, and your branches and remotes are fingerprinted around every task.
+- **You stay in charge.** Starting needs an explicit yes. `.ration/policy.toml` adds protected paths, denied categories, a weekly reserve and a task cap; it cannot switch the built-in protections off.
+
+`--mode build` allows bounded feature work, `--mode research` writes read-only analysis. Design, safety model, trust boundaries and limits: [docs/autopilot-architecture.md](docs/autopilot-architecture.md).
+
 ## Watching usage and sessions
 
 `ration status` shows each usage window, how fast you're burning it, and whether you'll run out before it resets. `ration watch` shows live sessions with a progress score and a stuck score, with the reasons.
@@ -220,6 +260,8 @@ What `ration run` does:
 | `ration watch` | Live view of sessions: progress, stuck score, reasons, suggestion |
 | `ration plan "<task>"` | Show the scheduler's decision and reasons without running |
 | `ration run "<task>" --check "<cmd>"` | Run a task with budget-aware model choice, verification and escalation |
+| `ration autopilot [status\|stop\|report] [--dry-run] [--mode safe\|build\|research]` | Find, rank and run safe, verified work for idle capacity, on separate branches (also `ration nightshift`) |
+| `ration goal [show\|set\|edit\|clear]` | The project goal, priorities and constraints autopilot ranks against (local, `.ration/goal.toml`) |
 | `ration sessions` / `ration history` | Discovered sessions / tasks run through RATION |
 | `ration providers` / `ration doctor` | Detected capabilities / installation health and hook latency |
 | `ration privacy [--purge]` | Exactly what's stored locally; delete it all |
@@ -271,6 +313,7 @@ What `ration run` does:
 - Hooks are appended next to yours in `~/.claude/settings.json` (backed up first); uninstall removes only RATION's entries. Your existing status line keeps working (RATION wraps and prints it).
 - Hooks are deterministic Python, **fail open** (an internal error never blocks your session), and add about 140 ms per tool call on the reference Windows machine, 54 ms of which is Python starting up (`ration doctor` measures yours).
 - RATION never edits `CLAUDE.md`, permissions, auth or sandbox settings, never passes `bypassPermissions`, and never uses OAuth tokens or private endpoints.
+- Optional plugin with slash commands (`/ration:autopilot`, `/ration:report`, `/ration:status`, `/ration:goal`) that call the installed CLI: `/plugin install ration --marketplace KNambiarDJsc/Ration`. It adds no hooks; `ration init` still installs those and the status line, which a plugin cannot set.
 
 **Codex**
 - Usage from Codex's own rollout logs (`$CODEX_HOME/sessions/**/rollout-*.jsonl`, server-reported `rate_limits`), read-only.
@@ -282,6 +325,7 @@ What `ration run` does:
 - **Stored:** event types, tool names, *hashes* of tool inputs, test runner names and pass/fail counts, token/cost numbers, usage percentages, file paths (can be turned off). For prompts: only length, estimated task type/difficulty, and usage % at submit time.
 - **Never stored in the database:** source code, diffs, prompt text, full commands, tool output, credentials.
 - **One deliberate exception, opt-in:** `ration handoff` reads message text at run time to write the restart kit, so it contains short excerpts of your prompts and the last reply. It's only printed/copied when you ask. With `handoff --auto on`, it's written to a local temp file (`~/.config/ration/handoffs/`) that is deleted as soon as the new session uses it, or after 30 minutes.
+- **Autopilot, only when you run it:** the goal, run reports, research output and the redacted diffs of discarded changes are kept in the project's own `.ration/` folder, which ignores itself in git. Task descriptions (file names and line numbers, never code) go in the database like any `ration run` task.
 - `ration privacy` shows exactly what's stored; `ration privacy --purge` deletes it.
 
 ## Configuration
@@ -305,6 +349,14 @@ context_tip_tokens = 150000    # suggest a restart kit above this size (0 = off)
 [handoff]
 auto = false              # true: after /clear, add the restart kit to the new session
 max_chars = 3000
+
+[autopilot]
+weekly_reserve_percent = 40      # optional work never takes the weekly window below this
+max_weekly_percent_per_run = 10  # and one run never uses more of the week than this
+max_tasks = 5
+min_score = 50                   # tasks scoring below this aren't worth unattended quota
+setup_command = ""               # run in each fresh worktree before its checks, e.g. "npm ci"
+test_command = ""                # empty = detect (pytest, npm test, go test, cargo test, make test)
 
 [guard]
 mode = "observe"          # "guard" lets hooks deny subagent explosions / inject stuck warnings
@@ -365,6 +417,7 @@ Known gaps:
 - The **Codex adapter** follows the open-source `codex-rs` protocol and is unit-tested against its formats, but hasn't been run against a live Codex install yet.
 - Session transcripts are an internal Claude Code format: read defensively, verified on 2.1.296, may need updates as Claude Code evolves.
 - Task difficulty is keyword heuristics corrected by your own history; no ML.
+- **Autopilot** is tested with a scripted agent (including hostile ones) and has run real Claude Code tasks on Windows, on this repository among others. Long multi-hour unattended runs are not measured yet, and the Codex path has never been run against an installed Codex. Start with `--dry-run` and `--max-tasks 1`.
 
 ## Roadmap
 
