@@ -86,7 +86,16 @@ def _base_repo() -> Path:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text, encoding="utf-8")
         git(root, "init", "-q", "-b", "main")
-        for k, v in (("user.email", "t@example.com"), ("user.name", "T"), ("commit.gpgsign", "false"), ("core.autocrlf", "false")):
+        # maintenance.auto / gc.auto off: `git commit` otherwise starts background maintenance, whose
+        # short-lived .git/objects/maintenance.lock can vanish while make_repo() is copying the repo.
+        for k, v in (
+            ("user.email", "t@example.com"),
+            ("user.name", "T"),
+            ("commit.gpgsign", "false"),
+            ("core.autocrlf", "false"),
+            ("maintenance.auto", "false"),
+            ("gc.auto", "0"),
+        ):
             git(root, "config", k, v)
         git(root, "add", "-A")
         git(root, "commit", "-q", "-m", "init")
@@ -97,7 +106,7 @@ def _base_repo() -> Path:
 def make_repo(root: Path, files: dict[str, str] | None = None) -> Path:
     """A small committed project: one tested module, one untested, fake test and lint commands.
     `files` are added (or replace fixture files) in the same single commit."""
-    shutil.copytree(_base_repo(), root)
+    shutil.copytree(_base_repo(), root, ignore=shutil.ignore_patterns("*.lock"))
     if files:
         for rel, text in files.items():
             p = root / rel

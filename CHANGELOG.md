@@ -32,6 +32,7 @@ Recommended version for the release that includes autopilot: 0.3.0 (a new featur
 ### Fixed
 - Cancelling a run on Windows (stuck detection, Ctrl-C, autopilot stop) terminated only the `.cmd` shim of an npm-installed agent and left the agent itself running. The whole process tree RATION started is now stopped.
 - `ration run` and autopilot on Windows with an npm install of Claude Code: `claude` is then a `.cmd` shim, and cmd.exe cut a multi-line prompt at its first newline, losing the rest of the prompt and every flag after it (including `--output-format stream-json`), so the run reported nothing. The prompt now goes on stdin for batch shims. Found by a real autopilot run.
+- The test fixture that copies a prepared git repository failed at random on CI: `git commit` starts background maintenance, and its short-lived `maintenance.lock` could vanish mid-copy. Maintenance is switched off in the fixture and lock files are not copied.
 - A hook payload that starts with a UTF-8 byte order mark (a PowerShell pipe adds one) was logged as a hook error and dropped.
 - The daily dollar-budget test depended on the time of day and failed late in the evening. The clock is pinned, and the late-evening case (the budget resets before the pace would use it up, so no alert) is its own test.
 
