@@ -46,6 +46,7 @@ from .base import (
 )
 
 EXEC_FLAGS = {"json": "--json", "model": "--model", "config_override": "--config", "sandbox": "--sandbox"}
+SANDBOXES = ("read-only", "workspace-write")  # never danger-full-access
 PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.M)
 
 
@@ -229,6 +230,11 @@ class CodexProvider:
         if model:
             argv += ["--model", model]
         argv += ["--config", f'model_reasoning_effort="{policy.effort}"']
+        # `ration run` passes no sandbox flag (your Codex config wins). Autopilot asks for one:
+        # workspace-write confines writes to the working directory, which is its worktree.
+        sandbox = str(self.cfg["codex"].get("sandbox") or "")
+        if sandbox in SANDBOXES and self.capabilities().features.get("sandbox"):
+            argv += ["--sandbox", sandbox]
         return argv + [prompt]
 
     def run(

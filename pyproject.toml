@@ -10,12 +10,16 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Karthik Nambiar" }]
-keywords = ["claude-code", "codex", "coding-agents", "llm", "budget", "scheduler"]
+keywords = ["claude-code", "codex", "coding-agents", "llm", "budget", "scheduler", "autopilot"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development",
 ]
 dependencies = ["rich>=13.7"]
@@ -35,9 +39,13 @@ ration = "ration.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ration"]
 
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "docs", "scripts", "claude-plugin", ".claude-plugin", "README.md", "CHANGELOG.md", "LICENSE", "CONTRIBUTING.md", "SECURITY.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["integration: runs real git repositories and processes (slower); part of the default run"]
 
 [tool.ruff]
 line-length = 100

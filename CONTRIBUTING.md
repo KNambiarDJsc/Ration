@@ -19,6 +19,8 @@ uv tool install --reinstall .
 ration init
 ```
 
+`pytest` runs everything (about 3 minutes on Windows, where starting processes is slow). `pytest -m "not integration"` skips the tests that drive real git repositories and processes and takes about 20 seconds; run the full suite before a pull request.
+
 Tests never touch your real `~/.claude` or `~/.config/ration`: `tests/conftest.py` points `RATION_HOME`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` at temp dirs.
 
 ## Design rules (please keep these)
@@ -43,6 +45,12 @@ Tests never touch your real `~/.claude` or `~/.config/ration`: `tests/conftest.p
 | Provider adapters | `providers/` (`claude.py`, `codex.py`, `generic.py`, `mock.py`) |
 | `ration run` loop | `orchestrator.py` |
 | Benchmark | `sim/bench.py` |
+| Autopilot | `autopilot/` (stdlib-only; see `docs/autopilot-architecture.md`) |
+| Claude Code plugin | `claude-plugin/`, `.claude-plugin/marketplace.json` (skills that call the CLI; no logic) |
+
+### Adding an opportunity source
+
+Write a function `(RepoContext) -> list[Opportunity]` in `autopilot/discovery.py` and decorate it with `@source("name")`, or ship it in another package under the `ration.opportunity_sources` entry-point group. Point at files and lines; never quote code in a description. A source must be deterministic and must not call a model. Give it a test in `tests/test_autopilot_discovery.py`.
 
 ### Adding a provider adapter
 
@@ -54,6 +62,17 @@ Implement the `AgentProvider` protocol in `providers/base.py` (`capabilities`, `
 - If behaviour changes, update the README and `CHANGELOG.md`.
 - If you change a decision rule (scheduler, stuck thresholds, advisor), say what real or simulated evidence motivated it.
 - Bug reports from real sessions are gold: include `ration doctor` output and, if relevant, the event sequence from `ration watch` (never paste prompts or code you don't want public).
+
+## Releasing
+
+Maintainers only. Nothing here is automated, on purpose.
+
+1. Set the version in `pyproject.toml`, `src/ration/__init__.py` and `claude-plugin/.claude-plugin/plugin.json`; date the `CHANGELOG.md` section.
+2. `pytest`, `ruff check src tests`, `claude plugin validate claude-plugin --strict`, `claude plugin validate . --strict`.
+3. `python -m build`, then install the wheel into a clean virtualenv and run `ration --version` and `ration autopilot --dry-run --no-probe`.
+   The version is bumped in the release commit, not while a feature is being developed.
+4. Merge to `main`, tag `vX.Y.Z`, push the tag, and create the GitHub release from the changelog section. Users install from GitHub with `uv tool install git+https://github.com/KNambiarDJsc/Ration` (or `@vX.Y.Z`).
+5. PyPI: the name `ration` belongs to an unrelated package. Publishing needs a new distribution name in `pyproject.toml` first (the import name and the `ration` command can stay).
 
 ## Code of conduct
 

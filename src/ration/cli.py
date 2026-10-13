@@ -454,6 +454,10 @@ def cmd_privacy(args: argparse.Namespace) -> int:
         f"[bold]Restart kits[/] (opt-in, `ration handoff --auto`): {auto}; {pending} pending temp file(s) in {hd}. "
         "They hold short prompt excerpts and are deleted when used or after 30 minutes."
     )
+    console.print(
+        "[bold]Autopilot[/] (only when you run it): the project goal, run reports, research output and the diffs of discarded changes "
+        "are kept in the project's own [bold].ration/[/] folder, which git ignores. Delete that folder to remove them."
+    )
     console.print("Delete everything: [bold]ration privacy --purge[/]", style="dim")
     return 0
 
@@ -796,6 +800,18 @@ def cmd_advisor(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_goal(args: argparse.Namespace) -> int:
+    from .autopilot import commands
+
+    return commands.cmd_goal(args)
+
+
+def cmd_autopilot(args: argparse.Namespace) -> int:
+    from .autopilot import commands
+
+    return commands.cmd_autopilot(args)
+
+
 def cmd_snippet(args: argparse.Namespace) -> int:
     from .providers.codex import agents_md_fragment
 
@@ -845,7 +861,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         " a warning before you hit your 5-hour limit, and what each heavy turn cost. Off: [bold]ration advisor off[/]."
     )
     console.print("Everything stays on this machine. See [bold]ration privacy[/].")
-    console.print("Next: [bold]ration status[/] · [bold]ration watch[/] · [bold]ration plan \"<task>\"[/]")
+    console.print("Next: [bold]ration status[/] · [bold]ration watch[/] · [bold]ration plan \"<task>\"[/] · [bold]ration autopilot --dry-run[/]")
     return 0
 
 
@@ -914,6 +930,9 @@ def build_parser() -> argparse.ArgumentParser:
     ad = sub.add_parser("advisor", help="in-session tips: model suggestions, limit warnings, turn receipts")
     ad.add_argument("state", choices=["on", "off"])
     sub.add_parser("snippet", help="print an optional AGENTS.md / CLAUDE.md fragment (never written for you)")
+    from .autopilot.commands import add_parsers
+
+    add_parsers(sub)
     return p
 
 
@@ -937,6 +956,9 @@ COMMANDS = {
     "governor": cmd_governor,
     "handoff": cmd_handoff,
     "snippet": cmd_snippet,
+    "goal": cmd_goal,
+    "autopilot": cmd_autopilot,
+    "nightshift": cmd_autopilot,
 }
 
 

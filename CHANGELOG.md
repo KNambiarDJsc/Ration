@@ -4,16 +4,34 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+Recommended version for the release that includes autopilot: 0.3.0 (a new feature, no breaking change).
+
 ### Added
+- **`ration autopilot`** (also `ration nightshift`): converts idle inference you chose to make available into verified, useful work. It finds tasks from local repository signals, scores them, and runs them one bounded task at a time through the existing `ration run` loop. Weekly quota is protected before the idle 5-hour window is used; if nothing worthwhile, safe and verifiable exists, it stops. Modes `safe`, `build` and `research`; `--dry-run`; `status`, `stop`, `report`. Design: `docs/autopilot-architecture.md`.
+  - **Stacked, verified changes.** Each task works in its own git worktree, starting from everything accepted before it, and is compared with a baseline (`SUCCESS`, `IMPROVED`, `NO_CHANGE`, `FAILED`, `REGRESSION`, `BLOCKED`, `UNVERIFIABLE`). Accepted changes are committed under `ration/auto/<run>/`; the run's `accepted` branch holds them all and is verified again as a whole. After every accepted change the repository is re-scanned and the queue rebuilt. Nothing is merged into your branches or pushed, and the checkout is never written to.
+  - **Safety that does not rely on the prompt.** No-go rules, a prompt-injection check on task text, mode limits; an isolated worktree, git network transports switched off for the agent, tool denials (Claude Code) and a workspace-write sandbox (Codex); an audit of the real diff (protected paths, dependency manifests and lockfiles, deletions, credentials); a fingerprint of your checkout, branches and remotes around every task.
+  - **`.ration/policy.toml`**: add protected paths, deny categories, set the weekly reserve, task cap and preferred provider. Strictly validated; it cannot switch built-in protections off.
+  - Retry with evidence: when an attempt breaks a check, the run loop shows the agent the failing output and lets it try once more.
+  - Opportunity packs (`developer`, `user` via `.ration/tasks.toml`, `research`) and an entry-point group, `ration.opportunity_sources`, for external ones. Check detection per ecosystem (Python, Node, Go, Rust, Java, make), reusing plain CI commands.
+  - Local history per project: cooldowns for rejected work, confidence calibrated by recent outcomes, cost estimates replaced by measured costs.
+- **`ration goal`**: a project goal with priorities and constraints in `.ration/goal.toml`, used to rank work.
+- In-session tip pointing at `ration autopilot --dry-run` when the 5-hour window is mostly unused, resets soon and the week is healthy (at most once per window; `advisor.autopilot_tip`).
+- Claude Code plugin (`claude-plugin/`, marketplace manifest at the repository root) with skills that call the local CLI.
+- `[autopilot]` configuration section. Existing config files keep working; missing keys take defaults.
 - Project logo (`docs/assets/logo.png`) at the top of the README.
 
 ### Docs
 - README: `ration governor` was missing from the command table; the configuration example now shows the governor-related advisor keys and `[handoff]`; hook latency is the measured figure; the modes table says which commands need no setup.
 
 ### Changed
+- `orchestrator.run_checks` accepts an environment, and `orchestrator.execute` accepts `check_env`, `max_attempts` and `baseline_gate`. Defaults are unchanged.
+- The Codex adapter passes `--sandbox read-only|workspace-write` when `codex.sandbox` is set and the installed CLI advertises the flag (autopilot sets it for its own runs only; `ration run` still passes no sandbox flag).
+- The Claude adapter passes `--disallowedTools` when `claude.disallowed_tools` is set (autopilot sets it for its own runs only).
 - Hooks import the advisor, handoff and transcript modules only on the events that use them. Measured on Windows with Python 3.11, both variants interleaved in one environment over 40 pairs: a tool-call hook takes a median 140 ms instead of 166 ms (25 ms less in the median pair, faster in 38 of 40). About 54 ms of either is interpreter start.
 
 ### Fixed
+- Cancelling a run on Windows (stuck detection, Ctrl-C, autopilot stop) terminated only the `.cmd` shim of an npm-installed agent and left the agent itself running. The whole process tree RATION started is now stopped.
+- `ration run` and autopilot on Windows with an npm install of Claude Code: `claude` is then a `.cmd` shim, and cmd.exe cut a multi-line prompt at its first newline, losing the rest of the prompt and every flag after it (including `--output-format stream-json`), so the run reported nothing. The prompt now goes on stdin for batch shims. Found by a real autopilot run.
 - A hook payload that starts with a UTF-8 byte order mark (a PowerShell pipe adds one) was logged as a hook error and dropped.
 - The daily dollar-budget test depended on the time of day and failed late in the evening. The clock is pinned, and the late-evening case (the budget resets before the pace would use it up, so no alert) is its own test.
 

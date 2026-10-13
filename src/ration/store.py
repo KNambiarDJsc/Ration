@@ -426,6 +426,12 @@ class Store:
             (status, time.time(), cost_usd, input_tokens, output_tokens, session_id, run_id),
         )
 
+    def fail_task_runs(self, task_id: str) -> None:
+        """A caller with a stricter verdict than "the checks pass" (autopilot compares with a
+        baseline) found the task's result not worth keeping: its runs must not count as
+        successes when the scheduler later asks how a model did on this kind of task."""
+        self.conn.execute("UPDATE runs SET status='failed' WHERE task_id=? AND status='succeeded'", (task_id,))
+
     def add_decision(
         self,
         task_id: str | None,

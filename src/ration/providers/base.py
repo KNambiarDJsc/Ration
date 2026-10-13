@@ -7,6 +7,7 @@ handles with less machinery. `on_event` returning False is the cancel signal.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -89,6 +90,19 @@ def run_text(argv: list[str], timeout: float = 20) -> str | None:
         return None
 
 
+def stop_process(proc: subprocess.Popen[str]) -> None:
+    """Ask a provider process RATION started to stop. Only ever that process and its
+    children. On Windows a CLI installed through npm is a `.cmd` shim: terminating it
+    would leave the real agent running underneath, so the tree is stopped."""
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=15)
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    proc.terminate()
+
+
 def stream_lines(
     argv: list[str],
     cwd: str,
@@ -118,11 +132,11 @@ def stream_lines(
             for line in proc.stdout:
                 if not on_line(line):
                     cancelled = True
-                    proc.terminate()
+                    stop_process(proc)
                     break
         except KeyboardInterrupt:
             cancelled = True
-            proc.terminate()
+            stop_process(proc)
         try:
             rc = proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
