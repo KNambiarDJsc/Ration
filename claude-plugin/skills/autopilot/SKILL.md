@@ -9,7 +9,7 @@ allowed-tools: Bash(ration autopilot --dry-run:*), Bash(ration autopilot status:
 Show the user what RATION Autopilot would do in this project. This skill plans; it does not run anything.
 
 1. Run `ration autopilot --dry-run $ARGUMENTS` from the project root. If the command is not found, tell the user to install RATION
-   (`uv tool install git+https://github.com/KNambiarDJsc/Ration`) and stop.
+   (`uv tool install ration-cli`) and stop.
 2. Show the output as it is. Do not re-rank the tasks, do not add tasks of your own, and do not restate estimates as facts:
    the budget figures marked "estimate" are estimates.
 3. If the plan says autopilot will not run, explain the stated reason in one sentence and stop. That outcome is correct, not an error.

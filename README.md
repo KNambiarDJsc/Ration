@@ -7,6 +7,7 @@
 The inference control plane for coding agents.
 
 [![CI](https://github.com/KNambiarDJsc/Ration/actions/workflows/ci.yml/badge.svg)](https://github.com/KNambiarDJsc/Ration/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ration-cli)](https://pypi.org/project/ration-cli/)
 [![Release](https://img.shields.io/github/v/release/KNambiarDJsc/Ration)](https://github.com/KNambiarDJsc/Ration/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -20,10 +21,10 @@ Every message you send re-reads your whole conversation. At 900k tokens of conte
 
 ## The 60-second version
 
-Requires Python 3.11+ and [Claude Code](https://code.claude.com). Install from GitHub. **Do not `pip install ration`: that name on PyPI is an unrelated package.**
+Requires Python 3.11+ and [Claude Code](https://code.claude.com). The package is **`ration-cli`**; the command is `ration`. **Do not `pip install ration`: that name on PyPI is an unrelated package.**
 
 ```bash
-uv tool install git+https://github.com/KNambiarDJsc/Ration   # or: pipx install git+https://github.com/KNambiarDJsc/Ration
+uv tool install ration-cli   # or: pipx install ration-cli
 
 ration governor    # the cheapest safe auto-compact window for how you work, from your own sessions
 ration xray        # where the rest of your usage went, and what to change
@@ -400,8 +401,10 @@ Read honestly: in this world RATION delivers about the same task value (differen
 ```bash
 ration hooks uninstall        # removes only RATION's hooks
 ration statusline uninstall   # restores your previous status line
-uv tool uninstall ration      # or: pipx uninstall ration
+uv tool uninstall ration-cli  # or: pipx uninstall ration-cli
 ```
+
+If you installed from GitHub before 0.3.0, the tool is registered as `ration`: use `uv tool uninstall ration`.
 
 Your data is in `~/.config/ration/` (delete it, or `ration privacy --purge` first).
 

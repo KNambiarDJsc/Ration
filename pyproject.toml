@@ -1,12 +1,14 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.25", "hatch-fancy-pypi-readme>=24.1"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ration"
-version = "0.2.0"
+# The distribution is `ration-cli` because `ration` on PyPI is an unrelated package.
+# The import package and the command are both still `ration`.
+name = "ration-cli"
+version = "0.3.0"
 description = "Spend intelligence where it matters. The inference control plane for coding agents."
-readme = "README.md"
+dynamic = ["readme"]
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Karthik Nambiar" }]
@@ -35,6 +37,25 @@ dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]
 ration = "ration.cli:main"
+
+# PyPI shows the README outside the repository, so relative images and links are made absolute at build time.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = 'src="(docs/[^"]+\.svg)"'
+replacement = 'src="https://raw.githubusercontent.com/KNambiarDJsc/Ration/main/\1?sanitize=true"'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = 'src="(docs/[^"]+\.png)"'
+replacement = 'src="https://raw.githubusercontent.com/KNambiarDJsc/Ration/main/\1"'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\]\((?!https?://|#|mailto:)([^)]+)\)'
+replacement = '](https://github.com/KNambiarDJsc/Ration/blob/main/\1)'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ration"]

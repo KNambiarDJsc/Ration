@@ -71,8 +71,9 @@ Maintainers only. Nothing here is automated, on purpose.
 2. `pytest`, `ruff check src tests`, `claude plugin validate claude-plugin --strict`, `claude plugin validate . --strict`.
 3. `python -m build`, then install the wheel into a clean virtualenv and run `ration --version` and `ration autopilot --dry-run --no-probe`.
    The version is bumped in the release commit, not while a feature is being developed.
-4. Merge to `main`, tag `vX.Y.Z`, push the tag, and create the GitHub release from the changelog section. Users install from GitHub with `uv tool install git+https://github.com/KNambiarDJsc/Ration` (or `@vX.Y.Z`).
-5. PyPI: the name `ration` belongs to an unrelated package. Publishing needs a new distribution name in `pyproject.toml` first (the import name and the `ration` command can stay).
+4. Merge to `main` and wait for CI to pass on that commit. A PyPI version can never be uploaded twice, so nothing is published from a red build.
+5. PyPI: `uv build`, `uvx twine check dist/*`, then `uv publish` with a token in `UV_PUBLISH_TOKEN`. The distribution is `ration-cli` (the name `ration` belongs to an unrelated package); the import name and the `ration` command are unchanged. Check it with `uvx --from ration-cli ration --version`.
+6. Tag `vX.Y.Z`, push the tag, and create the GitHub release from the changelog section. Users install with `uv tool install ration-cli`, or from GitHub with `uv tool install git+https://github.com/KNambiarDJsc/Ration@vX.Y.Z`.
 
 ## Code of conduct
 

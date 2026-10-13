@@ -4,7 +4,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-Recommended version for the release that includes autopilot: 0.3.0 (a new feature, no breaking change).
+## [0.3.0] - 2026-10-13
+
+First release on PyPI, as **`ration-cli`** (`uv tool install ration-cli`). The name `ration` there belongs to an unrelated package; the command and the import name are still `ration`. If you installed from GitHub earlier, run `uv tool uninstall ration` before installing `ration-cli`.
 
 ### Added
 - **`ration autopilot`** (also `ration nightshift`): converts idle inference you chose to make available into verified, useful work. It finds tasks from local repository signals, scores them, and runs them one bounded task at a time through the existing `ration run` loop. Weekly quota is protected before the idle 5-hour window is used; if nothing worthwhile, safe and verifiable exists, it stops. Modes `safe`, `build` and `research`; `--dry-run`; `status`, `stop`, `report`. Design: `docs/autopilot-architecture.md`.

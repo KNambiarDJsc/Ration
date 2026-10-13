@@ -1,7 +1,7 @@
 {
   "name": "ration",
   "displayName": "RATION",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Budget-aware helpers for Claude Code: see your usage windows, set a project goal, and plan safe unattended work for idle capacity. A thin wrapper over the local `ration` CLI.",
   "author": {
     "name": "Karthik Nambiar",
