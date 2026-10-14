@@ -229,6 +229,25 @@ def carry_over(payload: dict[str, Any], cfg: dict[str, Any]) -> tuple[str, str] 
     return text, note
 
 
+def notify_slack(adv_events: list[AgentEvent], message: str | None, cfg: dict[str, Any]) -> None:
+    """Mirror a subset of the advisor's own tips to a team webhook, opt-in only.
+    Best-effort: never raises, bounded by slack.TIMEOUT_S, so an unreachable
+    webhook cannot meaningfully slow down the developer's own session."""
+    url = cfg.get("slack", {}).get("webhook_url")
+    if not url or not message:
+        return
+    wanted = {k.strip() for k in str(cfg["slack"].get("events") or "").split(",") if k.strip()}
+    kinds = {str(e.metadata.get("kind", "")).split(":", 1)[0] for e in adv_events if e.event_type == EventType.ADVICE}
+    if not wanted & kinds:
+        return
+    from ..integrations import slack
+
+    try:
+        slack.post(url, message)
+    except Exception:
+        pass  # fail open: a team webhook must never affect the developer's session
+
+
 def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[str, Any] | None:
     ev = payload.get("hook_event_name", "")
     output: dict[str, Any] | None = None
@@ -258,6 +277,7 @@ def handle(payload: dict[str, Any], cfg: dict[str, Any], store: Store) -> dict[s
         if events:
             events[0].metadata.update(meta)
         events += adv_events
+        notify_slack(adv_events, message, cfg)
     elif ev in ("PostToolUse", "PostToolUseFailure", "Stop"):
         store.add_events(events)
         events = []
