@@ -13,7 +13,7 @@ from ration.models import (
     TaskType,
     UsageSnapshot,
 )
-from ration.scheduler import Attempt, ProviderOption, Scheduler
+from ration.scheduler import Attempt, ProviderOption, Scheduler, SchedulerConfig
 
 NOW = 10_000_000.0
 H = 3600.0
@@ -121,6 +121,55 @@ def test_retry_budget_exhaustion_stops():
 def test_keeps_model_when_last_attempt_progressed():
     p = sched({}).decide(task(value=0.6), [Attempt("claude", ModelClass.CHEAP, "failed", 0.1, 0.3)], now=NOW)
     assert p.model_class == ModelClass.CHEAP and "progress_on_last_attempt_keep_model" in p.reasons
+
+
+# ---- adaptive policy: this machine's own recorded outcomes, not a trained model --------
+
+
+def adaptive_sched(tier_success, providers=("claude",)):
+    return Scheduler(
+        [ProviderOption(p, ALL) for p in providers],
+        {},
+        SchedulerConfig(policy="adaptive"),
+        tier_success=tier_success,
+    )
+
+
+def test_adaptive_policy_is_off_by_default():
+    # same scenario as test_hard_debugging_starts_strong, but with a tier_success callback
+    # wired up: without policy="adaptive" it must still be ignored.
+    s = Scheduler([ProviderOption("claude", ALL)], {}, tier_success=lambda mc, tt: (10, 10))
+    p = s.decide(task(difficulty=0.8), now=NOW)
+    assert p.model_class == ModelClass.STRONG and "hard_debugging" in p.reasons
+
+
+def test_adaptive_policy_downgrades_hard_task_cheap_keeps_succeeding():
+    s = adaptive_sched(lambda mc, tt: (8, 10))  # 80% success, well above ADAPTIVE_HIGH_SR
+    p = s.decide(task(difficulty=0.8, ttype=TaskType.DEBUGGING, risk=0.3), now=NOW)
+    assert p.model_class == ModelClass.CHEAP
+    assert "adaptive_cheap_succeeds_here(8/10)" in p.reasons
+    assert not any(r.startswith("hard_") for r in p.reasons)
+
+
+def test_adaptive_policy_escalates_routine_task_cheap_keeps_failing():
+    s = adaptive_sched(lambda mc, tt: (1, 10))  # 10% success, well below ADAPTIVE_LOW_SR
+    p = s.decide(task(difficulty=0.3, ttype=TaskType.TESTS, risk=0.2), now=NOW)
+    assert p.model_class == ModelClass.STRONG
+    assert "adaptive_cheap_struggles_here(1/10)" in p.reasons
+    assert "routine_task_cheap_first" not in p.reasons
+
+
+def test_adaptive_policy_does_nothing_without_enough_samples():
+    s = adaptive_sched(lambda mc, tt: (1, 2))  # only 2 samples, below ADAPTIVE_MIN_SAMPLES
+    p = s.decide(task(difficulty=0.8, ttype=TaskType.DEBUGGING, risk=0.3), now=NOW)
+    assert p.model_class == ModelClass.STRONG and "hard_debugging" in p.reasons
+
+
+def test_adaptive_policy_never_overrides_high_risk():
+    # cheap "succeeds" 100% of the time here, but risk alone forces STRONG_FIRST.
+    s = adaptive_sched(lambda mc, tt: (10, 10))
+    p = s.decide(task(difficulty=0.3, ttype=TaskType.TESTS, risk=0.7), now=NOW)
+    assert p.model_class == ModelClass.STRONG and "high_risk_task" in p.reasons
 
 
 def test_difficulty_heuristics_are_explained():

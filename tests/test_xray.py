@@ -83,6 +83,50 @@ def test_xray_cli_renders_findings(tmp_path, capsys):
     assert "What to change" in out and "Long contexts" in out and "/compact" in out
 
 
+# ---- --compare: this period vs. the previous one ---------------------------------------
+
+
+def test_xray_compare_splits_into_two_non_overlapping_windows(tmp_path):
+    # previous period: light, cheap usage
+    prev_rows = [line(f"p{i}", "claude-sonnet-5", NOW - 100_000, inp=10, out=50) for i in range(5)]
+    # current period: heavier, premium-model usage
+    cur_rows = [line(f"c{i}", "claude-opus-5", NOW - 1_000, inp=10, out=500) for i in range(5)]
+    build(tmp_path, {"s1": (prev_rows, []), "s2": (cur_rows, [])})
+
+    c = xray.compare(tmp_path, days=1, now=NOW)
+    assert c["previous"]["calls"] == 5 and c["current"]["calls"] == 5
+    # the two periods don't overlap
+    assert c["previous"]["total_weighted"] > 0 and c["current"]["total_weighted"] > 0
+
+    by_key = {r["key"]: r for r in c["rows"]}
+    assert by_key["premium_share"]["prev"] == 0.0
+    assert by_key["premium_share"]["cur"] == 1.0
+    assert by_key["premium_share"]["delta_pp"] == 100.0
+    assert by_key["total_weighted"]["delta_pct"] > 0  # heavier current period
+
+
+def test_xray_compare_handles_empty_periods(tmp_path):
+    c = xray.compare(tmp_path, days=1, now=NOW)
+    assert c["current"]["calls"] == 0 and c["previous"]["calls"] == 0
+    # no div-by-zero: absolute deltas are None when the baseline is 0
+    assert all(r["delta_pct"] is None for r in c["rows"] if not r["is_share"])
+
+
+def test_xray_compare_cli_renders_trend(tmp_path, capsys):
+    prev_rows = [line("p1", "claude-sonnet-5", NOW - 100_000, inp=10, out=50)]
+    cur_rows = [line("c1", "claude-opus-5", NOW - 1_000, inp=10, out=500)]
+    build(tmp_path, {"s1": (prev_rows, []), "s2": (cur_rows, [])})
+    assert cli.main(["xray", "--compare", "--days", "1", "--projects-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "trend" in out.lower() and "premium model share" in out and "→" in out
+
+
+def test_xray_compare_json(tmp_path, capsys):
+    assert cli.main(["xray", "--compare", "--days", "1", "--json", "--projects-dir", str(tmp_path)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "rows" in out and "current" in out and "previous" in out
+
+
 # ---- resume-cost tip ---------------------------------------------------------------------
 RESUME = {
     "hook_event_name": "SessionStart",

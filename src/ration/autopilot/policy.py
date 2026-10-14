@@ -353,13 +353,76 @@ def parse_user_policy(text: str) -> UserPolicy:
     )
 
 
-def load_user_policy(state_dir: Path) -> UserPolicy:
-    """`<project>/.ration/policy.toml`, or the defaults when there is none. Raises
-    PolicyError for a file that exists but cannot be fully understood."""
-    p = state_dir / POLICY_FILE
-    if not p.is_file():
-        return UserPolicy()
+def merge_policies(central: UserPolicy, local: UserPolicy) -> UserPolicy:
+    """A centrally-managed policy composed with the project's own local one:
+    whichever side is more restrictive wins, field by field. A local
+    `.ration/policy.toml` can tighten a central policy further; it can never
+    loosen it (that is the point of a central policy, same as the built-in
+    rules a local file already cannot switch off)."""
+    if central.allowed_categories is None:
+        allowed = local.allowed_categories
+    elif local.allowed_categories is None:
+        allowed = central.allowed_categories
+    else:
+        allowed = central.allowed_categories & local.allowed_categories
+    return UserPolicy(
+        weekly_reserve=max((v for v in (central.weekly_reserve, local.weekly_reserve) if v is not None), default=None),
+        max_tasks=min((v for v in (central.max_tasks, local.max_tasks) if v is not None), default=None),
+        protected_paths=tuple(dict.fromkeys([*central.protected_paths, *local.protected_paths])),
+        allowed_categories=allowed,
+        denied_categories=central.denied_categories | local.denied_categories,
+        allow_dependency_changes=central.allow_dependency_changes and local.allow_dependency_changes,
+        allow_lockfile_changes=central.allow_lockfile_changes and local.allow_lockfile_changes,
+        preferred_provider=central.preferred_provider if central.preferred_provider != "auto" else local.preferred_provider,
+    )
+
+
+REMOTE_CACHE_FILE = "policy.remote.toml"
+
+
+def fetch_remote_policy(url: str, cache_path: Path, *, ttl_minutes: float = 60.0, timeout: float = 5.0) -> str:
+    """The central policy's raw TOML text. Fetched fresh when the local cache is
+    older than `ttl_minutes` (or missing); otherwise the cache is used as-is, so a
+    central policy does not cost a network round trip on every run. A fetch
+    failure falls back to whatever is cached, however old, since a brief network
+    blip must not silently drop an organization's restrictions. Raises
+    PolicyError only when nothing usable exists at all."""
+    import time
+    import urllib.request
+    from urllib.error import URLError
+
+    stale = not cache_path.is_file() or (time.time() - cache_path.stat().st_mtime) > ttl_minutes * 60
+    if stale:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (admin-configured URL)
+                text = resp.read().decode("utf-8")
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(text, encoding="utf-8")
+            return text
+        except (URLError, OSError, UnicodeDecodeError) as e:
+            if not cache_path.is_file():
+                raise PolicyError(f"autopilot.policy_url could not be fetched and no cached copy exists ({e})") from e
     try:
-        return parse_user_policy(p.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError) as e:
-        raise PolicyError(f"cannot be read ({e})") from e
+        return cache_path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise PolicyError(f"autopilot.policy_url cache is unreadable ({e})") from e
+
+
+def load_user_policy(state_dir: Path, *, policy_url: str = "", cache_ttl_minutes: float = 60.0) -> UserPolicy:
+    """`<project>/.ration/policy.toml`, merged with a centrally-managed policy
+    pulled from `policy_url` when one is configured (`[autopilot].policy_url`):
+    whichever side is more restrictive wins on every field (see
+    `merge_policies`). Raises PolicyError for a policy (local or central) that
+    cannot be fully understood; autopilot does not run under a policy it
+    cannot fully read."""
+    local = UserPolicy()
+    p = state_dir / POLICY_FILE
+    if p.is_file():
+        try:
+            local = parse_user_policy(p.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as e:
+            raise PolicyError(f"cannot be read ({e})") from e
+    if not policy_url:
+        return local
+    central = parse_user_policy(fetch_remote_policy(policy_url, state_dir / REMOTE_CACHE_FILE, ttl_minutes=cache_ttl_minutes))
+    return merge_policies(central, local)

@@ -121,6 +121,9 @@ def execute(
     def success(p: str, mc: ModelClass, tt: TaskType) -> tuple[int, int]:
         return store.provider_success(p, str(mc), str(tt))
 
+    def tier_success(mc: ModelClass, tt: TaskType) -> tuple[int, int]:
+        return store.class_success(str(mc), str(tt))
+
     options = [
         ProviderOption(name, prov.models(), available=prov.capabilities().installed)
         for name, prov in providers.items()
@@ -150,7 +153,7 @@ def execute(
         if "codex" in providers and hasattr(providers["codex"], "ingest_usage"):
             providers["codex"].ingest_usage(store)  # type: ignore[attr-defined]
         budgets = budgets_fn() if budgets_fn else provider_budgets(store, cfg, has_backlog=True)
-        sched = Scheduler(options, budgets, SchedulerConfig.from_config(cfg), success)
+        sched = Scheduler(options, budgets, SchedulerConfig.from_config(cfg), success, tier_success)
         policy = sched.decide(task, attempts)
         state = {
             "task": {"type": str(task.task_type), "difficulty": task.estimated_difficulty, "value": task.estimated_value, "risk": task.risk},

@@ -43,7 +43,7 @@ def default_root() -> Path:
     return (Path(base) if base else Path.home() / ".claude") / "projects"
 
 
-def find_threads(root: Path, since: float) -> list[Thread]:
+def find_threads(root: Path, since: float, until: float | None = None) -> list[Thread]:
     threads: list[Thread] = []
     if not root.is_dir():
         return threads
@@ -58,7 +58,7 @@ def find_threads(root: Path, since: float) -> list[Thread]:
                 continue
         except OSError:
             continue
-        calls = [c for c in iter_calls(path) if c.ts >= since]
+        calls = [c for c in iter_calls(path) if c.ts >= since and (until is None or c.ts < until)]
         if not calls:
             continue
         cwd = next((c.cwd for c in calls if c.cwd), None)
@@ -79,10 +79,11 @@ def analyze(
     ctx_cap: int = DEFAULT_CTX_CAP,
     premium_markers: str = "opus",
     now: float | None = None,
+    until: float | None = None,
 ) -> dict[str, Any]:
     now = time.time() if now is None else now
     since = now - days * 86400
-    threads = find_threads(root or default_root(), since)
+    threads = find_threads(root or default_root(), since, until)
 
     total = 0.0
     by_model: dict[str, float] = defaultdict(float)
@@ -167,6 +168,55 @@ def analyze(
     }
     result["findings"] = findings(result)
     return result
+
+
+# Rows shown by `ration xray --compare`: (result key, label, is_share).
+# Share metrics compare as percentage-point deltas; absolute ones as a % change.
+COMPARE_ROWS: list[tuple[str, str, bool]] = [
+    ("total_weighted", "total usage (weighted tokens)", False),
+    ("calls", "model calls", False),
+    ("components.cache_read", "re-reading context", True),
+    ("premium_share", "premium model share", True),
+    ("long_context_share", "long-context share", True),
+    ("recache_share", "idle-rebuild share", True),
+    ("subagent_share", "subagent share", True),
+]
+
+
+def _get(r: dict[str, Any], key: str) -> float:
+    cur: Any = r
+    for part in key.split("."):
+        cur = cur[part]
+    return float(cur)
+
+
+def compare(
+    root: Path | None = None,
+    *,
+    days: float = 7,
+    ctx_cap: int = DEFAULT_CTX_CAP,
+    premium_markers: str = "opus",
+    now: float | None = None,
+) -> dict[str, Any]:
+    """This period vs. the one immediately before it, same length, no overlap."""
+    now = time.time() if now is None else now
+    cur = analyze(root, days=days, ctx_cap=ctx_cap, premium_markers=premium_markers, now=now, until=now)
+    prev = analyze(root, days=days, ctx_cap=ctx_cap, premium_markers=premium_markers, now=now - days * 86400, until=now - days * 86400)
+    rows: list[dict[str, Any]] = []
+    for key, label, is_share in COMPARE_ROWS:
+        c, p = _get(cur, key), _get(prev, key)
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "is_share": is_share,
+                "cur": c,
+                "prev": p,
+                "delta_pp": (c - p) * 100 if is_share else None,
+                "delta_pct": ((c - p) / p) if (not is_share and p) else None,
+            }
+        )
+    return {"days": days, "current": cur, "previous": prev, "rows": rows}
 
 
 def findings(r: dict[str, Any]) -> list[dict[str, Any]]:

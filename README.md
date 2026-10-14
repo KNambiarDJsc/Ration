@@ -106,6 +106,21 @@ What to change  (biggest first)
 
 That output is from a real machine. The point: most quota isn't spent on *thinking*, it's spent on **re-reading a huge warm context on every call**, and on **rebuilding it after you walk away**. Those are habits, and habits are fixable. Every finding states whether it's measured or an upper-bound estimate, and with what assumption.
 
+`ration xray --compare` shows this period against the one right before it, so you can tell whether a change (a new `governor` window, fewer subagents, shorter sessions) actually moved the numbers, instead of re-reading two reports side by side:
+
+```text
+$ ration xray --compare --days 7
+Quota X-ray: trend  last 7 days vs. the 7 days before that
+
+  total usage (weighted tokens)     842,300 →   612,900   ▼ -27%
+  model calls                           410 →       365   ▼ -11%
+  re-reading context                  81% →      62%   ▼ -19pp
+  premium model share                 35% →      22%   ▼ -13pp
+  long-context share                  58% →      24%   ▼ -34pp
+  idle-rebuild share                   9% →       4%   ▼ -5pp
+  subagent share                      12% →      15%   ▲ +3pp
+```
+
 RATION also acts at the moment you can still choose. When you resume an old session whose cache has expired:
 
 ```text
@@ -238,6 +253,7 @@ How it stays safe:
 - **Every task works in its own git worktree**, starting from everything accepted before it, and is compared with a baseline. Better and nothing worse is committed to a `ration/auto/<run>/…` branch; anything else is discarded with the reason. At the end, everything accepted is verified again together.
 - **Your checkout is never written to.** Nothing is merged into your branches, and nothing is pushed or deployed: git network access is switched off for the agent, and your branches and remotes are fingerprinted around every task.
 - **You stay in charge.** Starting needs an explicit yes. `.ration/policy.toml` adds protected paths, denied categories, a weekly reserve and a task cap; it cannot switch the built-in protections off.
+- **An org can manage policy centrally.** `[autopilot].policy_url` points at a policy an admin controls; it's merged with the project's own `.ration/policy.toml` field by field, and whichever side is stricter wins, so a local file can tighten it but never loosen it. Cached locally, so a brief network blip doesn't drop the organization's restrictions.
 
 `--mode build` allows bounded feature work, `--mode research` writes read-only analysis. Design, safety model, trust boundaries and limits: [docs/autopilot-architecture.md](docs/autopilot-architecture.md).
 
@@ -249,6 +265,8 @@ How it stays safe:
 
 <p align="center"><img src="docs/assets/watch.svg" alt="ration watch: one healthy session, one session looping on the same failing test, flagged likely_stuck with reasons" width="760"></p>
 
+For more than one screen at a time, `ration dashboard` is a navigable [Textual](https://github.com/Textualize/textual) TUI over the same local data: tabs for live Sessions (drill into one for its full event tail and reasons), Budgets (with a usage sparkline), History, and Autopilot (shows an in-progress run's status, with a confirm-gated "stop" action — it never starts a run from the TUI). Needs the optional `dashboard` extra: `pip install "ration-cli[dashboard]"` or `uv tool install "ration-cli[dashboard]"`.
+
 ## Commands
 
 | Command | What it does |
@@ -256,9 +274,11 @@ How it stays safe:
 | `ration governor [apply\|status\|revert] [--days N]` | Cheapest safe auto-compact window from your own sessions; apply it, check the real before/after, undo it |
 | `ration init` | Detect agents, install hooks + status line (asks first, backs up settings) |
 | `ration handoff [--copy] [--auto on\|off]` | Restart kit from a session + git state, so `/clear` doesn't lose the thread (no model call) |
-| `ration xray [--days N]` | Where your usage went (context size, idle rebuilds, subagents, models) and what to change |
+| `ration xray [--days N] [--compare]` | Where your usage went (context size, idle rebuilds, subagents, models) and what to change; `--compare` shows this period vs. the one before it |
+| `ration report [--days N] [--out FILE] [--json]` | Export a shareable local snapshot (HTML/JSON) of `xray` + current usage, for a team lead; nothing is uploaded automatically |
 | `ration status` | Usage per window, burn pressure, reset forecast, recommendation |
 | `ration watch` | Live view of sessions: progress, stuck score, reasons, suggestion |
+| `ration dashboard [--interval N] [--minutes N] [--cwd PATH]` | Navigable Textual TUI: Sessions (drill-down), Budgets (sparkline), History, Autopilot (status + safe stop) — needs the optional `dashboard` extra |
 | `ration plan "<task>"` | Show the scheduler's decision and reasons without running |
 | `ration run "<task>" --check "<cmd>"` | Run a task with budget-aware model choice, verification and escalation |
 | `ration autopilot [status\|stop\|report] [--dry-run] [--mode safe\|build\|research]` | Find, rank and run safe, verified work for idle capacity, on separate branches (also `ration nightshift`) |
@@ -268,6 +288,7 @@ How it stays safe:
 | `ration privacy [--purge]` | Exactly what's stored locally; delete it all |
 | `ration benchmark` | Reproducible routing simulation (A/B/C/D policies under equal budgets) |
 | `ration advisor on\|off` | In-session tips |
+| `ration slack status [--webhook-url URL]` / `ration slack test` | Mirror budget-limit, pace and stuck-session tips to a Slack-compatible webhook; opt-in, off by default |
 | `ration guard on\|off` | Enforcement (default is observe-only) |
 | `ration hooks install\|uninstall\|status`, `ration statusline install\|uninstall` | Manage the Claude Code integration |
 | `ration snippet` | Print an optional AGENTS.md / CLAUDE.md fragment (never written for you) |
@@ -322,11 +343,13 @@ How it stays safe:
 
 ## Privacy and safety
 
-- **All data stays on your machine** in SQLite (`~/.config/ration/ration.db`). There is no upload code path and no telemetry.
+- **All data stays on your machine** in SQLite (`~/.config/ration/ration.db`), and there is no telemetry: nothing is ever sent anywhere unless you explicitly configure a destination yourself (see below).
 - **Stored:** event types, tool names, *hashes* of tool inputs, test runner names and pass/fail counts, token/cost numbers, usage percentages, file paths (can be turned off). For prompts: only length, estimated task type/difficulty, and usage % at submit time.
 - **Never stored in the database:** source code, diffs, prompt text, full commands, tool output, credentials.
 - **One deliberate exception, opt-in:** `ration handoff` reads message text at run time to write the restart kit, so it contains short excerpts of your prompts and the last reply. It's only printed/copied when you ask. With `handoff --auto on`, it's written to a local temp file (`~/.config/ration/handoffs/`) that is deleted as soon as the new session uses it, or after 30 minutes.
 - **Autopilot, only when you run it:** the goal, run reports, research output and the redacted diffs of discarded changes are kept in the project's own `.ration/` folder, which ignores itself in git. Task descriptions (file names and line numbers, never code) go in the database like any `ration run` task.
+- **The only two network paths, both opt-in and both yours to point wherever you choose:** `ration slack` (`[slack].webhook_url`, empty by default) posts the exact advisor-tip text shown to you to a webhook you configure; `[autopilot].policy_url`, when set, is fetched read-only to pull a centrally-managed policy. Neither is contacted unless you set the URL, and no other destination is ever used.
+- `ration report` is a file you create and share yourself (like a screenshot), not an upload: `ration report --json` is a plain text file on disk until you choose to send it somewhere.
 - `ration privacy` shows exactly what's stored; `ration privacy --purge` deletes it.
 
 ## Configuration
@@ -358,6 +381,19 @@ max_tasks = 5
 min_score = 50                   # tasks scoring below this aren't worth unattended quota
 setup_command = ""               # run in each fresh worktree before its checks, e.g. "npm ci"
 test_command = ""                # empty = detect (pytest, npm test, go test, cargo test, make test)
+policy_url = ""                  # centrally-managed policy (org admin); merged with .ration/policy.toml, stricter side wins
+policy_cache_minutes = 60        # how long a fetched central policy is reused before refetching
+
+[scheduler]
+policy = "adaptive"       # "adaptive": this machine's own recorded outcomes (>=4) can move the routine/hard split
+                           # for a task type (never overrides risk-based escalation). "rule_based": fixed thresholds only.
+
+[slack]
+webhook_url = ""          # incoming webhook URL (Slack, or compatible, e.g. Teams). Empty = off.
+events = "limit,pace,stuck"  # which advisor tip kinds to mirror to the channel
+
+[report]
+label = ""                # optional free-text label (e.g. your name) shown in `ration report` exports
 
 [guard]
 mode = "observe"          # "guard" lets hooks deny subagent explosions / inject stuck warnings
@@ -388,7 +424,7 @@ Read honestly: in this world RATION delivers about the same task value (differen
 
 **Does it slow Claude Code down?** Each tool call runs a local hook: a median 140 ms on the reference Windows machine, of which 54 ms is Python starting up. `ration doctor` measures it on yours. `governor`, `xray` and `handoff` need no hooks at all.
 
-**Does it send my code or prompts anywhere?** No. There is no network code at all; everything is local SQLite, and prompt text is never stored.
+**Does it send my code or prompts anywhere?** No. Your code and prompt text are never sent anywhere and are never stored. The only two network paths are opt-in and point only where you configure them: `ration slack` (off until you set `[slack].webhook_url`) posts short tip text, never code; `[autopilot].policy_url` (off until set) is a read-only fetch of a policy file. Everything else is local SQLite.
 
 **Is this allowed with a Claude subscription?** RATION only reads what Claude Code itself exposes locally (hooks, status line, session files) and launches the official `claude` CLI. It never touches credentials, OAuth tokens or private endpoints.
 
@@ -430,7 +466,6 @@ Known gaps:
 - Codex lifecycle hooks and live Codex validation
 - Gemini CLI and OpenAI-compatible / local-model adapters
 - Optional MCP server (`ration_get_budget`, `ration_request_escalation`, …); the core never depends on it
-- A Textual dashboard once the core loop has proven itself
 - Learned allocation policies, trained on the state/action/outcome log RATION already records
 
 ## Research
