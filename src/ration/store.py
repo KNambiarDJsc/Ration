@@ -507,6 +507,18 @@ class Store:
         s, n = self.conn.execute(q, args).fetchone()
         return int(s or 0), int(n or 0)
 
+    def class_success(self, model_class: str, task_type: str) -> tuple[int, int]:
+        """(successes, attempts) for this model class and task type, across all providers.
+        Feeds the adaptive scheduler policy: whether *this* class has actually
+        worked for *this* kind of task on this machine, not a global assumption."""
+        s, n = self.conn.execute(
+            "SELECT SUM(CASE WHEN r.status='succeeded' THEN 1 ELSE 0 END), COUNT(*) FROM runs r"
+            " LEFT JOIN tasks t ON t.id=r.task_id WHERE r.model_class=? AND t.task_type=?"
+            " AND r.status IN ('succeeded','failed')",
+            (model_class, task_type),
+        ).fetchone()
+        return int(s or 0), int(n or 0)
+
     def table_counts(self) -> dict[str, int]:
         names = [
             r[0]

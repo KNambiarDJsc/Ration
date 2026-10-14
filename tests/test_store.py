@@ -2,7 +2,7 @@ import sqlite3
 import threading
 
 from ration import config
-from ration.models import AgentEvent, EventType
+from ration.models import AgentEvent, AgentTask, EventType, TaskType
 from ration.store import SCHEMA_VERSION, Store, connect, migrate
 
 
@@ -32,6 +32,26 @@ def test_event_roundtrip(store):
     store.add_event(AgentEvent("claude", "s", EventType.TEST_RESULT, {"passed": 1, "failed": 2}, timestamp=5.0))
     [e] = store.events(session_id="s")
     assert e.event_type == EventType.TEST_RESULT and e.metadata == {"passed": 1, "failed": 2}
+
+
+def _run(store, provider, model_class, task_type, status):
+    task = AgentTask("t", task_type=task_type)
+    store.add_task(task)
+    store.start_run(f"r-{task.id}", provider, task_id=task.id, model_class=model_class)
+    store.end_run(f"r-{task.id}", status)
+
+
+def test_class_success_aggregates_across_providers(store):
+    for provider in ("claude", "codex"):
+        _run(store, provider, "cheap", str(TaskType.TESTS), "succeeded")
+    _run(store, "claude", "cheap", str(TaskType.TESTS), "failed")
+    _run(store, "claude", "strong", str(TaskType.TESTS), "succeeded")  # different class: excluded
+    _run(store, "claude", "cheap", str(TaskType.DEBUGGING), "succeeded")  # different task type: excluded
+
+    assert store.class_success("cheap", str(TaskType.TESTS)) == (2, 3)
+    assert store.class_success("strong", str(TaskType.TESTS)) == (1, 1)
+    assert store.class_success("cheap", str(TaskType.DEBUGGING)) == (1, 1)
+    assert store.class_success("premium", str(TaskType.TESTS)) == (0, 0)
 
 
 def test_concurrent_writers_like_parallel_hooks():

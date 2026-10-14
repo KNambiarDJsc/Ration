@@ -51,6 +51,10 @@ class SchedulerConfig:
     reserve_percent: float = 20
     max_parallel_agents: int = 4
     default_max_turns: int = 30
+    # "rule_based": today's fixed thresholds only. "adaptive": also lets this
+    # machine's own recorded outcomes (see Scheduler.tier_success) move the
+    # routine/hard split for a task type, once there's enough history to trust.
+    policy: str = "rule_based"
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> SchedulerConfig:
@@ -58,10 +62,17 @@ class SchedulerConfig:
             reserve_percent=cfg["budget"]["reserve_percent"],
             max_parallel_agents=cfg["scheduler"]["max_parallel_agents"],
             default_max_turns=cfg["scheduler"]["default_max_turns"],
+            policy=cfg["scheduler"].get("policy", "rule_based"),
         )
 
 
 SuccessFn = Callable[[str, ModelClass, TaskType], tuple[int, int]]
+# (successes, attempts) for a model class on a task type, across all providers.
+TierSuccessFn = Callable[[ModelClass, TaskType], tuple[int, int]]
+
+ADAPTIVE_MIN_SAMPLES = 4  # don't act on fewer outcomes than this
+ADAPTIVE_HIGH_SR = 0.7  # cheap succeeds this often here -> stop treating it as hard
+ADAPTIVE_LOW_SR = 0.35  # cheap fails this often here -> stop treating it as routine
 
 
 @dataclass
@@ -70,6 +81,7 @@ class Scheduler:
     budgets: dict[str, ProviderBudget] = field(default_factory=dict)
     config: SchedulerConfig = field(default_factory=SchedulerConfig)
     success: SuccessFn | None = None
+    tier_success: TierSuccessFn | None = None
 
     def decide(self, task: AgentTask, attempts: list[Attempt] | None = None, *, now: float | None = None) -> ExecutionPolicy:
         now = time.time() if now is None else now
@@ -96,6 +108,10 @@ class Scheduler:
         else:
             escalation = EscalationPolicy.CHEAP_FIRST
             reasons.append("routine_task_cheap_first")
+
+        # Adaptive: never overrides the risk-based STRONG_FIRST (safety, not a guess).
+        if cfg.policy == "adaptive" and self.tier_success is not None and task.risk < 0.6:
+            escalation, reasons = self._adapt_escalation(task, escalation, reasons)
 
         # 2. stop conditions (retry cap flexes with budget headroom)
         failed = [a for a in attempts if a.outcome != "succeeded"]
@@ -185,6 +201,26 @@ class Scheduler:
         )
 
     # ------------------------------------------------------------------
+    def _adapt_escalation(
+        self, task: AgentTask, escalation: EscalationPolicy, reasons: list[str]
+    ) -> tuple[EscalationPolicy, list[str]]:
+        """Nudge CHEAP_FIRST vs. STRONG_FIRST using this machine's own history for
+        this task type, not a trained model: just the (successes, attempts) the
+        store already has from `ration run`. Does nothing below ADAPTIVE_MIN_SAMPLES,
+        so a new install behaves exactly like `policy = "rule_based"`."""
+        assert self.tier_success is not None
+        s, n = self.tier_success(ModelClass.CHEAP, task.task_type)
+        if n < ADAPTIVE_MIN_SAMPLES:
+            return escalation, reasons
+        sr = s / n
+        if escalation == EscalationPolicy.STRONG_FIRST and sr >= ADAPTIVE_HIGH_SR:
+            kept = [r for r in reasons if not r.startswith("hard_")]
+            return EscalationPolicy.CHEAP_FIRST, kept + [f"adaptive_cheap_succeeds_here({s}/{n})"]
+        if escalation == EscalationPolicy.CHEAP_FIRST and sr <= ADAPTIVE_LOW_SR:
+            kept = [r for r in reasons if r != "routine_task_cheap_first"]
+            return EscalationPolicy.STRONG_FIRST, kept + [f"adaptive_cheap_struggles_here({s}/{n})"]
+        return escalation, reasons
+
     def _retry_budget(self, task: AgentTask) -> int:
         n = 1 + (task.estimated_value >= 0.7) + (task.estimated_difficulty >= 0.6)
         return int(n)
