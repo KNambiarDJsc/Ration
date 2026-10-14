@@ -26,7 +26,7 @@ agent activity ──► hooks / statusline / logs ──► normalize ──►
 | Usage "estimates" | official numbers first | Both Claude Code (status line) and Codex (rollout `token_count`) already expose server-reported quota percentages and reset times. Estimation is the fallback, never the default. |
 | Hook-enforced subagent caps | budget-aware caps only | Claude Code ≥2.1.217 has native spawn caps (`CLAUDE_CODE_MAX_*`). RATION adds what those can't know: premium count, reserve, burn pressure. |
 | MCP server | not built | Optional by design; nothing in the core depends on it. |
-| TUI (Textual) | `ration watch` with Rich Live | The spec says no fancy UI until the core works. |
+| TUI (Textual) | `ration watch` with Rich Live, **plus** `ration dashboard` (Textual, optional `[dashboard]` extra) | V1 deferred Textual until the core worked; `ration watch` still needs no extra dependency, and `dashboard` adds real navigation (tabs, session drill-down) once there was enough to navigate. |
 | Codex guard mode | observe only | Codex hooks exist but the event schema is newer than Claude's; wire it once stable. |
 
 ## Not built yet (on purpose)

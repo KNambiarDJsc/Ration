@@ -82,6 +82,11 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "test_command": "",
         "lint_command": "",
         "typecheck_command": "",
+        # Centrally-managed policy: a URL an org admin controls, merged with the
+        # project's own .ration/policy.toml (whichever side is stricter wins on
+        # every field; a local file can tighten it but never loosen it). Empty = off.
+        "policy_url": "",
+        "policy_cache_minutes": 60,
         # When the in-session tip may appear.
         "suggest_reset_within_hours": 2.0,
         "suggest_min_remaining_percent": 50,
@@ -113,6 +118,20 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "privacy": {
         "telemetry": False,
         "store_paths": True,
+    },
+    "report": {
+        # Optional free-text label (e.g. your name) shown in `ration report` exports.
+        # Empty by default: the export identifies no one unless you choose to.
+        "label": "",
+    },
+    "slack": {
+        # Incoming webhook URL (Slack, or any compatible endpoint such as Teams).
+        # Empty = off. Mirrors a subset of the advisor's own tips to a channel;
+        # nothing new is computed or collected, and no other destination is ever contacted.
+        "webhook_url": "",
+        # Comma-separated advisor tip kinds to mirror: "limit" (window/spend at or near
+        # empty), "pace" (on track to run out before reset), "stuck" (session looks stuck).
+        "events": "limit,pace,stuck",
     },
 }
 

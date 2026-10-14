@@ -215,6 +215,22 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    try:
+        from .dashboard.app import RationDashboardApp
+    except ImportError:
+        console.print(
+            "`ration dashboard` needs the optional textual dependency.\n"
+            '  pip install "ration-cli[dashboard]"\n'
+            '  uv tool install "ration-cli[dashboard]"',
+            style="red",
+            markup=False,
+        )
+        return 2
+    RationDashboardApp(interval=args.interval, cwd=args.cwd, since_minutes=args.minutes).run()
+    return 0
+
+
 def _print_assessment(task: Any, a: Any) -> None:
     console.print(header())
     console.print(f"\n[bold]Task[/]  {task.description}")
@@ -732,6 +748,53 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from . import report
+
+    cfg = config.load()
+    projects_dir = Path(args.projects_dir) if args.projects_dir else None
+    with Store() as store:
+        data = report.build(cfg, store, days=args.days, projects_dir=projects_dir)
+    if args.json:
+        print(json.dumps(data, default=str, indent=2))
+        return 0
+    out = Path(args.out) if args.out else Path(f"ration-report-{time.strftime('%Y%m%d-%H%M%S')}.html")
+    out.write_text(report.render_html(data), encoding="utf-8")
+    console.print(header())
+    console.print(f"\nWrote {out} ({out.stat().st_size:,} bytes).")
+    console.print("Share this file however your team already shares files; nothing was uploaded.", style="dim")
+    return 0
+
+
+def _render_xray_compare(args: argparse.Namespace, root: Any, cfg: dict) -> int:
+    from . import xray
+
+    c = xray.compare(root, days=args.days, ctx_cap=args.cap, premium_markers=cfg["claude"].get("premium_markers", "opus"))
+    if args.json:
+        print(json.dumps(c, default=str, indent=2))
+        return 0
+    console.print(header())
+    if not c["current"]["calls"] and not c["previous"]["calls"]:
+        console.print(f"\nNo Claude Code sessions found in the last {2 * args.days:g} days under {root}.", style="yellow")
+        return 0
+    console.print(
+        f"\n[bold]Quota X-ray: trend[/]  last {args.days:g} days vs. the {args.days:g} days before that   "
+        "[dim](read-only, local)[/]\n"
+    )
+    for r in c["rows"]:
+        if r["is_share"]:
+            arrow = "▲" if r["delta_pp"] > 0.05 else ("▼" if r["delta_pp"] < -0.05 else "·")
+            console.print(f"  {r['label'][:30]:<30} {r['prev']:>5.0%} → {r['cur']:>5.0%}   {arrow} {r['delta_pp']:+.0f}pp")
+        else:
+            change = f"{r['delta_pct']:+.0%}" if r["delta_pct"] is not None else "n/a"
+            arrow = "▲" if (r["delta_pct"] or 0) > 0.05 else ("▼" if (r["delta_pct"] or 0) < -0.05 else "·")
+            console.print(f"  {r['label'][:30]:<30} {r['prev']:>9,.0f} → {r['cur']:>9,.0f}   {arrow} {change}")
+    console.print()
+    return 0
+
+
 def cmd_xray(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -739,6 +802,8 @@ def cmd_xray(args: argparse.Namespace) -> int:
 
     cfg = config.load()
     root = Path(args.projects_dir) if args.projects_dir else xray.default_root()
+    if args.compare:
+        return _render_xray_compare(args, root, cfg)
     r = xray.analyze(root, days=args.days, ctx_cap=args.cap, premium_markers=cfg["claude"].get("premium_markers", "opus"))
     if args.json:
         print(json.dumps(r, default=str, indent=2))
@@ -798,6 +863,29 @@ def cmd_advisor(args: argparse.Namespace) -> int:
     else:
         console.print("advisor: off (observation and guard mode are unaffected)")
     return 0
+
+
+def cmd_slack(args: argparse.Namespace) -> int:
+    from .integrations import slack
+
+    cfg = config.load()
+    url = args.webhook_url or cfg["slack"].get("webhook_url") or ""
+    if args.action == "status":
+        if args.webhook_url:
+            config.set_value("slack", "webhook_url", args.webhook_url)
+            url = args.webhook_url
+        if url:
+            console.print(f"slack: on, mirroring tip kinds ({cfg['slack'].get('events', '')}) to a configured webhook")
+        else:
+            console.print("slack: off (set webhook_url under slack in config.toml, or `ration slack status --webhook-url <url>` to save one)")
+        return 0
+    # test
+    if not url:
+        console.print("No webhook URL configured. Pass one: `ration slack test --webhook-url https://hooks.slack.com/...`", style="yellow")
+        return 1
+    ok = slack.post(url, "RATION: test message. If you can see this, budget/stuck alerts will reach this channel.")
+    console.print("sent" if ok else "could not reach the webhook (check the URL)", style="green" if ok else "red")
+    return 0 if ok else 1
 
 
 def cmd_goal(args: argparse.Namespace) -> int:
@@ -878,6 +966,10 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--once", action="store_true")
     w.add_argument("--interval", type=float, default=2.0)
     w.add_argument("--minutes", type=float, default=30.0, help="show sessions active in the last N minutes")
+    db = sub.add_parser("dashboard", help="live Textual TUI: sessions, budgets, history, autopilot — all navigable (needs the optional `textual` extra)")
+    db.add_argument("--interval", type=float, default=2.0, help="refresh interval in seconds")
+    db.add_argument("--minutes", type=float, default=30.0, help="show sessions active in the last N minutes")
+    db.add_argument("--cwd", default=".", help="project root for the autopilot tab (walks up to the nearest .git)")
 
     for name, helptext in (("run", "schedule and run a task"), ("plan", "show what `run` would do, without running")):
         r = sub.add_parser(name, help=helptext)
@@ -927,8 +1019,17 @@ def build_parser() -> argparse.ArgumentParser:
     xr.add_argument("--cap", type=int, default=120_000, help="context size (tokens) treated as 'long' (default 120000)")
     xr.add_argument("--projects-dir", default=None)
     xr.add_argument("--json", action="store_true")
+    xr.add_argument("--compare", action="store_true", help="this period vs. the one immediately before it")
+    rp = sub.add_parser("report", help="export a shareable local snapshot (HTML/JSON) of your usage, for sharing with a team; nothing is uploaded automatically")
+    rp.add_argument("--days", type=float, default=7)
+    rp.add_argument("--out", default=None, help="output path (default: ration-report-<timestamp>.html)")
+    rp.add_argument("--json", action="store_true")
+    rp.add_argument("--projects-dir", default=None)
     ad = sub.add_parser("advisor", help="in-session tips: model suggestions, limit warnings, turn receipts")
     ad.add_argument("state", choices=["on", "off"])
+    sk = sub.add_parser("slack", help="mirror budget/stuck tips to a team webhook (Slack or compatible); opt-in, off by default")
+    sk.add_argument("action", choices=["status", "test"])
+    sk.add_argument("--webhook-url", default=None, help="set/override [slack].webhook_url (persists with 'status', one-shot with 'test')")
     sub.add_parser("snippet", help="print an optional AGENTS.md / CLAUDE.md fragment (never written for you)")
     from .autopilot.commands import add_parsers
 
@@ -940,6 +1041,7 @@ COMMANDS = {
     "init": cmd_init,
     "status": cmd_status,
     "watch": cmd_watch,
+    "dashboard": cmd_dashboard,
     "run": cmd_run,
     "plan": cmd_plan,
     "sessions": cmd_sessions,
@@ -952,7 +1054,9 @@ COMMANDS = {
     "statusline": cmd_statusline,
     "guard": cmd_guard,
     "advisor": cmd_advisor,
+    "slack": cmd_slack,
     "xray": cmd_xray,
+    "report": cmd_report,
     "governor": cmd_governor,
     "handoff": cmd_handoff,
     "snippet": cmd_snippet,

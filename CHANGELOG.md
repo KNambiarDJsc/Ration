@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- `ration xray --compare`: this period vs. the one immediately before it (same length, no overlap), with deltas for total usage, model calls, re-reading-context share, premium model share, long-context share, idle-rebuild share and subagent share. `--json` supported.
+- `ration report`: exports a shareable local snapshot (HTML or `--json`) of `xray` + current usage, for handing to a team lead. No backend, no upload code path; sharing the file is something the developer does on purpose. Optional `[report].label` to self-identify in the export.
+- `scheduler.policy = "adaptive"` (the existing, previously-unused config default is now wired up): the scheduler's routine/hard split for a task type can be nudged by this machine's own recorded (successes, attempts) from `ration run`, once there are at least 4 outcomes for that task type. Never overrides the risk-based STRONG_FIRST escalation. `policy = "rule_based"` keeps the exact fixed-threshold behavior.
+- `ration slack`: mirrors budget-limit, pace and stuck-session advisor tips to a Slack-compatible incoming webhook. Opt-in (`[slack].webhook_url`, empty by default); `ration slack status [--webhook-url URL]` and `ration slack test`.
+- `[autopilot].policy_url`: a centrally-managed policy URL an org admin controls, merged with the project's own `.ration/policy.toml`. Whichever side is more restrictive wins on every field, so a local file can tighten a central policy but never loosen it. Cached locally (`policy_cache_minutes`); a transient fetch failure falls back to the last good copy instead of dropping the organization's restrictions.
+- `ration dashboard`: a navigable Textual TUI (optional `[dashboard]` extra, `pip install "ration-cli[dashboard]"`) over the same local data `ration watch`/`status`/`history` already read — tabs for Sessions (row-select drills into a read-only detail screen: full event tail, progress/stuck reasons), Budgets (per-window table + a usage sparkline), History, and Autopilot (live run progress, with one interactive action: a confirm-gated "stop" button that calls the existing safe `autopilot.state.request_stop()` primitive — the dashboard never starts a run). Falls back to a friendly install hint if `textual` isn't installed; `ration watch` is unchanged and still needs no extra dependency.
+
 ## [0.3.0] - 2026-10-13
 
 First release on PyPI, as **`ration-cli`** (`uv tool install ration-cli`). The name `ration` there belongs to an unrelated package; the command and the import name are still `ration`. If you installed from GitHub earlier, run `uv tool uninstall ration` before installing `ration-cli`.
