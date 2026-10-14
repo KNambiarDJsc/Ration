@@ -138,9 +138,9 @@ def make_plan(
         ctx.notes.append(f"{STATE_DIR}/{policy.POLICY_FILE} is tracked by git and was ignored: a policy must be a local, untracked file")
     else:
         try:
-            user = policy.load_user_policy(root / STATE_DIR)
+            user = policy.load_user_policy(root / STATE_DIR, policy_url=ap.get("policy_url", ""), cache_ttl_minutes=float(ap.get("policy_cache_minutes", 60)))
         except policy.PolicyError as e:
-            policy_error = f"{STATE_DIR}/{policy.POLICY_FILE} is invalid: {e}. Fix or remove it; autopilot does not run under a policy it cannot fully read"
+            policy_error = f"{STATE_DIR}/{policy.POLICY_FILE} is invalid, or the policy fetched from autopilot.policy_url is invalid: {e}. Fix it; autopilot does not run under a policy it cannot fully read"
     md = user.apply(md)
     reserve = reserve if reserve is not None else user.weekly_reserve
     explicit_cap = max_tasks if max_tasks is not None else user.max_tasks
