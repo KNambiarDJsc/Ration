@@ -44,6 +44,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "budget_alerts": True,
         "turn_receipts": True,
         "resume_tip": True,  # say what resuming an expired-cache session will rebuild
+        "capacity_tip": True,  # warn before a heavy turn if the window likely can't absorb it
+        "capacity_min_percent": 3.0,  # don't bother warning below this predicted cost
         # Suggest a restart kit when a session's context passes this many tokens (0 = off).
         "context_tip_tokens": 150000,
         # Status line: show "ctx 312k · msg ≈0.2%" once context passes this size (0 = off).

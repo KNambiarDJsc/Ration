@@ -169,6 +169,11 @@ After `ration init` you don't need another terminal. Tips appear as Claude Code 
   RATION: that turn used 7% of your 5-hour window (3 subagents, 41 tool calls).
   RATION: your weekly window still has 55% left and resets in 9h. Unused quota is lost at reset.
 
+> find and fix why the auth token refresh occasionally deadlocks under load
+  RATION: a debugging turn here usually costs ~10% of your 5-hour window (6 seen); sending it
+          would take you into your reserve (20%). Consider waiting for reset, a cheaper model,
+          or narrowing the ask.
+
 status line:  RATION · 5h 72% (reset 1h59m)  ⚠ 5h limit in ~40m
 ```
 
@@ -182,6 +187,7 @@ Each kind of tip is rate-limited, and model tips are withheld when RATION isn't 
 | Needs a status line or a Pro/Max plan | Model and effort are read from the session transcript, so tips work with hooks alone. API-key users set `daily_usd` / `weekly_usd`; spend comes from Claude Code's own `cost.total_cost_usd`. |
 | Usage % arrives late | Each turn's tokens are counted **exactly** from the transcript (de-duplicated, subagents included). The % is exact when a fresh reading exists, otherwise estimated from a usage-per-token rate **learned on your machine** and labelled `~… calibrated on this machine`. |
 | Effort | Detected live (`effort.level`, transcript `effort`) and suggested as `/effort low|medium|high`. |
+| "Will I run out before I'm done?" | The capacity tip compares your repo's own median turn cost for this task type against what's left of your window — but it's about the **next turn**, not a whole multi-turn task (RATION doesn't track task boundaries in interactive sessions), and it says so. Silent without enough history or a calibrated rate. |
 
 ## Let RATION run a task
 
@@ -346,6 +352,8 @@ quiet_minutes = 20        # don't repeat the same kind of tip within this window
 price_tag_min_ctx = 150000     # status line shows the next message's price above this context size (0 = off)
 compact_nudge_tokens = 250000  # suggest /compact when tests go green above this size (0 = off)
 context_tip_tokens = 150000    # suggest a restart kit above this size (0 = off)
+capacity_tip = true            # warn before a heavy turn if the window likely can't absorb it
+capacity_min_percent = 3.0     # don't bother warning below this predicted cost
 
 [handoff]
 auto = false              # true: after /clear, add the restart kit to the new session

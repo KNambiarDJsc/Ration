@@ -4,6 +4,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- Capacity tip (`[advisor].capacity_tip`, on by default): before a heavy turn, warns if this repo's own median cost for a turn of this type likely won't fit in what's left of the window (or would eat into the reserve), using the same learned per-token rate the turn-receipt already calibrates. About the *next* turn, not a whole multi-turn task — RATION doesn't track task boundaries in interactive sessions, and the tip says so by only ever talking about "a turn like this." Silent without enough history (`[advisor].capacity_min_percent` floor, default 3%) or a calibrated rate yet.
+
 ## [0.3.0] - 2026-10-13
 
 First release on PyPI, as **`ration-cli`** (`uv tool install ration-cli`). The name `ration` there belongs to an unrelated package; the command and the import name are still `ration`. If you installed from GitHub earlier, run `uv tool uninstall ration` before installing `ration-cli`.

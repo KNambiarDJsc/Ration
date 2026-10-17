@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime
 
 from ration import advisor, transcript
-from ration.budget import provider_budgets
+from ration.budget import ProviderBudget, provider_budgets, window_budget
 from ration.difficulty import assess
 from ration.hooks import claude as hook
 from ration.hooks import statusline
@@ -274,3 +274,81 @@ def test_stale_lower_reading_for_same_window_is_ignored(store):
     statusline.record({"rate_limits": {"seven_day": {"used_percentage": 10, "resets_at": reset}}}, store)
     statusline.record({"rate_limits": {"seven_day": {"used_percentage": 1, "resets_at": reset}}}, store)
     assert store.latest_usage("claude")[0].used_percent == 10
+
+
+# ---- limit 5: will this window absorb the next heavy turn? ----------------------------
+HARD = "find and fix why the auth token refresh occasionally deadlocks under load"
+
+
+def _budget(remaining_percent, *, reserve_percent=20, window="five_hour", hours_to_reset=2.0):
+    now = time.time()
+    snap = UsageSnapshot("claude", window, ResourceType.USAGE_PERCENT, 100 - remaining_percent, now + hours_to_reset * H, 300, Source.PROVIDER_CLI, Confidence.HIGH, now)
+    return ProviderBudget("claude", [window_budget(snap, [], now=now, reserve_percent=reserve_percent)])
+
+
+def test_capacity_tip_warns_when_remaining_is_below_the_predicted_cost():
+    stats = (5, 30.0, 2_000_000.0)  # 5 turns seen, median 2M weighted tokens
+    t = advisor.capacity_tip(stats, _budget(remaining_percent=3), rate=5.0, reserve_percent=20, label="debugging")
+    assert t is not None and t[0] == "capacity:insufficient" and "may not get a full reply" in t[1]
+
+
+def test_capacity_tip_warns_when_it_would_eat_into_the_reserve():
+    stats = (5, 30.0, 2_000_000.0)  # predicted cost = 5.0 * 2.0 = 10%
+    t = advisor.capacity_tip(stats, _budget(remaining_percent=25, reserve_percent=20), rate=5.0, reserve_percent=20, label="debugging")
+    assert t is not None and t[0] == "capacity:risky" and "reserve" in t[1]
+
+
+def test_capacity_tip_is_silent_with_plenty_of_headroom():
+    stats = (5, 30.0, 2_000_000.0)  # predicted cost = 10%, 80% remaining, reserve 20%
+    assert advisor.capacity_tip(stats, _budget(remaining_percent=80), rate=5.0, reserve_percent=20, label="debugging") is None
+
+
+def test_capacity_tip_is_silent_below_the_min_percent_threshold():
+    stats = (5, 30.0, 10_000.0)  # predicted cost = 5.0 * 0.01 = 0.05%, trivially cheap
+    assert advisor.capacity_tip(stats, _budget(remaining_percent=3), rate=5.0, reserve_percent=20, label="debugging", min_percent=3.0) is None
+
+
+def test_capacity_tip_is_silent_without_history_or_a_calibrated_rate():
+    budget = _budget(remaining_percent=3)
+    assert advisor.capacity_tip(None, budget, rate=5.0, reserve_percent=20, label="debugging") is None
+    assert advisor.capacity_tip((5, 30.0, 2_000_000.0), budget, rate=None, reserve_percent=20, label="debugging") is None
+    assert advisor.capacity_tip((5, 30.0, 2_000_000.0), None, rate=5.0, reserve_percent=20, label="debugging") is None
+
+
+def _seed_capacity_history(store, repo, now):
+    for i in range(5):
+        store.add_event(AgentEvent("claude", f"h{i}", EventType.TURN_SUMMARY, {"repo": repo, "task_type": "debugging", "tools": 30, "wtok": 2_000_000}, timestamp=now - 3600))
+    for i in range(3):
+        store.add_event(AgentEvent("claude", f"c{i}", EventType.CALIBRATION, {"meter": "five_hour", "model": "claude-sonnet-5", "rate": 5.0}, timestamp=now - 1800))
+
+
+def test_on_prompt_warns_live_when_the_window_cannot_absorb_this_turn(store, cfg):
+    repo = sig("/work/bigrepo")
+    now = time.time()
+    _seed_capacity_history(store, repo, now)
+    store.add_usage(UsageSnapshot("claude", "five_hour", ResourceType.USAGE_PERCENT, 97, now + 2 * H, 300, Source.PROVIDER_CLI, Confidence.HIGH, now))
+    store.add_event(AgentEvent("claude", "s1", EventType.MODEL_SELECTED, {"model": "claude-sonnet-5"}))
+    _, _, msg = advisor.on_prompt({"session_id": "s1", "cwd": "/work/bigrepo", "prompt": HARD}, cfg, store, now=now)
+    assert msg and "may not get a full reply" in msg
+
+
+def test_on_prompt_capacity_tip_is_silent_with_low_confidence_prompts(store, cfg):
+    repo = sig("/work/bigrepo")
+    now = time.time()
+    _seed_capacity_history(store, repo, now)
+    store.add_usage(UsageSnapshot("claude", "five_hour", ResourceType.USAGE_PERCENT, 97, now + 2 * H, 300, Source.PROVIDER_CLI, Confidence.HIGH, now))
+    cfg["advisor"]["budget_alerts"] = cfg["advisor"]["model_suggestions"] = False  # isolate the capacity tip
+    _, _, msg = advisor.on_prompt({"session_id": "s1", "cwd": "/work/bigrepo", "prompt": "yes do it"}, cfg, store, now=now)
+    assert msg is None  # too short/ambiguous to classify at all: no assessment, no tip
+
+
+def test_on_prompt_capacity_tip_respects_its_config_toggle(store, cfg):
+    repo = sig("/work/bigrepo")
+    now = time.time()
+    _seed_capacity_history(store, repo, now)
+    store.add_usage(UsageSnapshot("claude", "five_hour", ResourceType.USAGE_PERCENT, 97, now + 2 * H, 300, Source.PROVIDER_CLI, Confidence.HIGH, now))
+    store.add_event(AgentEvent("claude", "s1", EventType.MODEL_SELECTED, {"model": "claude-sonnet-5"}))
+    cfg["advisor"]["capacity_tip"] = False
+    cfg["advisor"]["budget_alerts"] = cfg["advisor"]["model_suggestions"] = False  # isolate the capacity tip
+    _, _, msg = advisor.on_prompt({"session_id": "s1", "cwd": "/work/bigrepo", "prompt": HARD}, cfg, store, now=now)
+    assert msg is None

@@ -287,6 +287,44 @@ def use_it_tip(budgets: dict[str, ProviderBudget]) -> Tip | None:
     return None
 
 
+def capacity_tip(
+    stats: tuple[int, float, float] | None,
+    budget: ProviderBudget | None,
+    rate: float | None,
+    reserve_percent: float,
+    label: str,
+    min_percent: float = 3.0,
+) -> Tip | None:
+    """Before a heavy turn, say whether the window can likely absorb it: this is about
+    the *next* turn, not a whole multi-turn task (RATION doesn't track task boundaries
+    in interactive sessions), using this repo's own median turn cost for this task type.
+    Silent without enough history or a calibrated rate — a guess here is worse than none."""
+    if stats is None or not rate or not budget or not budget.known:
+        return None
+    n, _, median_wtok = stats
+    predicted_pct = rate * median_wtok / 1e6
+    bw = budget.binding
+    if predicted_pct < min_percent or bw is None:
+        return None
+    window_label = WINDOW_LABEL.get(bw.window, bw.window)
+    remaining = budget.remaining_percent or 0.0
+    reset = f" (resets in {fmt_h(bw.hours_to_reset)})" if bw.hours_to_reset else ""
+    if remaining < predicted_pct:
+        return (
+            "capacity:insufficient",
+            f"a {label} turn here usually costs ~{predicted_pct:.0f}% of your {window_label} window ({n} seen); "
+            f"you have {remaining:.0f}% left{reset} and may not get a full reply. "
+            "Consider waiting for reset, a cheaper model, or narrowing the ask.",
+        )
+    if remaining - predicted_pct < reserve_percent:
+        return (
+            "capacity:risky",
+            f"a {label} turn here usually costs ~{predicted_pct:.0f}% of your {window_label} window ({n} seen); "
+            f"sending it would take you into your reserve ({reserve_percent:.0f}%){reset}.",
+        )
+    return None
+
+
 def context_tip(tpath: str | None, cfg: dict[str, Any]) -> Tip | None:
     """When the context is large, every call re-reads all of it. Offer the free way out."""
     limit = int(cfg["advisor"].get("context_tip_tokens", 0))
@@ -430,6 +468,15 @@ def on_prompt(payload: dict[str, Any], cfg: dict[str, Any], store: Any, now: flo
     t = context_tip(tpath, cfg)
     if t:
         tips.append(t)
+    if adv.get("capacity_tip", True) and a and a.confidence != "low":
+        stats = history_stats(store, repo, a.task_type, now)
+        rate = any_rate(store, now)
+        t = capacity_tip(
+            stats, budgets.get(PROVIDER), rate, cfg["budget"]["reserve_percent"],
+            TYPE_LABEL.get(a.task_type, str(a.task_type)), float(adv.get("capacity_min_percent", 3.0)),
+        )
+        if t:
+            tips.append(t)
     if adv["model_suggestions"] and a:
         model, effort = current_model(store, sid, tpath)
         if model is None:
